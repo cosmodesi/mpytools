@@ -126,7 +126,7 @@ def gather_array(data, root=0, mpicomm=None):
         return None
 
     if not isinstance(data, np.ndarray):
-        raise ValueError('`data` must be numpy array in gather_array')
+        raise ValueError('"data" must be numpy array in gather_array')
 
     # need C-contiguous order
     if not data.flags['C_CONTIGUOUS']:
@@ -666,6 +666,8 @@ def send_array(data, dest, tag=0, blocking=True, mpicomm=None):
     mpicomm : MPI communicator, default=None
         Communicator. Defaults to current communicator.
     """
+    if not isinstance(data, np.ndarray):
+        raise ValueError('"data" must be numpy array in send_array')
     if not data.flags['C_CONTIGUOUS']:
         data = np.ascontiguousarray(data)
     shape, dtype = data.shape, data.dtype
@@ -747,64 +749,6 @@ def local_size(size, mpicomm=None):
     return localsize
 
 
-def convert_to_native_endian(array, warn=False):
-    '''
-    Returns the supplied array in native endian byte-order.
-    If the array already has native endianness, then the
-    same array is returned.
-
-    Parameters
-    ----------
-    array: np.ndarray
-        The array to convert
-    warn: bool, optional
-        Print a warning if `array` is not already native endian.
-        Default: False.
-
-    Returns
-    -------
-    new_array: np.ndarray
-        The array in native-endian byte-order.
-
-    Example
-    -------
-    >>> import numpy as np
-    >>> import sys
-    >>> sys_is_le = sys.byteorder == 'little'
-    >>> native_code = sys_is_le and '<' or '>'
-    >>> swapped_code = sys_is_le and '>' or '<'
-    >>> native_dt = np.dtype(native_code + 'i4')
-    >>> swapped_dt = np.dtype(swapped_code + 'i4')
-    >>> arr = np.arange(10, dtype=native_dt)
-    >>> new_arr = convert_to_native_endian(arr)
-    >>> arr is new_arr
-    True
-    >>> arr = np.arange(10, dtype=swapped_dt)
-    >>> new_arr = convert_to_native_endian(arr)
-    >>> new_arr.dtype.byteorder == '=' or new_arr.dtype.byteorder == native_code
-    True
-    >>> convert_to_native_endian(None) is None
-    True
-    '''
-    import sys
-    import warnings
-
-    if array is None:
-        return array
-
-    import numpy as np
-    array = np.array(array, order='C', copy=False)
-
-    system_is_little_endian = (sys.byteorder == 'little')
-    array_is_little_endian = (array.dtype.byteorder == '<')
-    if (array_is_little_endian != system_is_little_endian) and not (array.dtype.byteorder == '='):
-        if warn:
-            warnings.warn("One or more input array has non-native endianness!  A copy will"\
-                      " be made with the correct endianness.")
-        array = array.byteswap().newbyteorder()
-    return array
-
-
 def _reduce_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
     """
     Apply operation ``npop`` on input array ``data`` and reduce the result
@@ -832,7 +776,7 @@ def _reduce_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
 
     Returns
     -------
-    toret : scalar, array
+    out : scalar, array
         Result of reduce operations ``npop`` and ``mpiop``.
         If ``0`` in ``axis``, result is broadcast on all ranks.
         Else, result is local.
@@ -982,13 +926,13 @@ def _reduce_arg_array(data, npop, mpiargop, mpiop, *args, mpicomm=None, axis=Non
 
 @CurrentMPIComm.enable
 def argmin_array(data, *args, mpicomm=None, axis=None, **kwargs):
-    """Return index of minimum in input array ``data`` along ``axis``."""
+    """Return (local) index and rank of minimum in input array ``data`` along ``axis``."""
     return _reduce_arg_array(data, np.argmin, MPI.MINLOC, MPI.MIN, *args, mpicomm=mpicomm, axis=axis, **kwargs)
 
 
 @CurrentMPIComm.enable
 def argmax_array(data, *args, return_rank=False, mpicomm=None, axis=None, **kwargs):
-    """Return index of maximum in input array ``data`` along ``axis``."""
+    """Return (local) index and rank of maximum in input array ``data`` along ``axis``."""
     return _reduce_arg_array(data, np.argmax, MPI.MAXLOC, MPI.MAX, *args, mpicomm=mpicomm, axis=axis, **kwargs)
 
 
@@ -1016,7 +960,7 @@ def sort_array(data, axis=-1, kind=None, mpicomm=None):
 
     Returns
     -------
-    toret : array
+    out : array
         Sorted array (scattered).
     """
     toret = np.sort(data, axis=axis, kind=kind)

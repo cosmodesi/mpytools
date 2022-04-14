@@ -1,6 +1,6 @@
 # mpytools
 
-**mpytools** is a Python toolkit to
+**mpytools** is a Python toolkit to manage/read/write catalog and array-type data over multiple processes.
 
 Example notebooks are provided in directory nb/.
 
@@ -11,20 +11,27 @@ Strict requirements are:
   - numpy
   - mpi4py
 
+Reading/writing fits, hdf5, bigfile, or asdf formats requires respectively:
+
+  - fitsio
+  - h5py
+  - bigfile
+  - asdf
+
 ## Installation
 
 ### pip
 
 Simply run:
 ```
-python -m pip install git+https://github.com/adematti/mpytools
+python -m pip install git+https://github.com/cosmodesi/mpytools
 ```
 
 ### git
 
 First:
 ```
-git clone https://github.com/adematti/mpytools.git
+git clone https://github.com/cosmodesi/mpytools.git
 ```
 To install the code::
 ```
@@ -37,9 +44,9 @@ python setup.py develop --user
 
 ## License
 
-**mockfactory** is free software distributed under a GPLv3 license. For details see the [LICENSE](https://github.com/adematti/mpytools/blob/main/LICENSE).
+**mpytools** is free software distributed under a BSD3 license. For details see the [LICENSE](https://github.com/cosmodesi/mpytools/blob/main/LICENSE).
 
 ## Credits
 
 [nbodykit](https://github.com/bccp/nbodykit) for recipe for handling of various file formats and MPI array utilities.
-Edmond Chaussidon for making up this package name.
+Edmond Chaussidon for creating this package name.

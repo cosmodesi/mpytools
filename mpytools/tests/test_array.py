@@ -30,6 +30,12 @@ def test_array():
     mpi_array.cshape = (-1, 5)
     assert mpi_array.cshape == (mpicomm.allreduce(local_array.size) // 5, 5)
 
+    for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
+        assert getattr(MPIScatteredArray, name)(shape=10).shape == (10,)
+        assert getattr(MPIScatteredArray, name)(cshape=10).cshape == (10,)
+    assert MPIScatteredArray.full(fill_value=4., shape=10).shape == (10,)
+    assert MPIScatteredArray.full(fill_value=4., cshape=10).cshape == (10,)
+
 
 if __name__ == '__main__':
 

@@ -349,11 +349,13 @@ def weighted_quantile(x, q, weights=None, axis=None, interpolation='lower'):
     return quantiles
 
 
-def is_sequence(column):
-    return isinstance(column, (list, tuple))
+def is_sequence(item):
+    """Whether input item is a tuple or list."""
+    return isinstance(item, (list, tuple))
 
 
 def list_concatenate(li):
+    """Concatenate input list of sequences (tuples or lists)."""
     toret = []
     for el in li:
         if is_sequence(el):

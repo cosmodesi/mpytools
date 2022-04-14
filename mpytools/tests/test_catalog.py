@@ -92,6 +92,11 @@ def test_cslice():
         for name in ['RA']:
             assert np.all(test.cget(name) == ref.cget(name)[sl])
 
+    assert np.all(ref.cindices().gathered(mpiroot=None) == np.arange(ref.csize))
+    for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
+        getattr(ref, name)(itemshape=3)
+    ref.full(fill_value=4.)
+
 
 def test_io():
 
@@ -123,20 +128,19 @@ def test_io():
             test = Catalog.read(fns)
             assert np.all(test['Position'] == ref['Position'])
 
-            def apply_slices(tmp, sls):
+            def apply_slices(tmp, sls, name=None):
                 if not isinstance(sls, list): sls = [sls]
-                for sl in sls: tmp = tmp[sl]
-                return tmp
-
-            def apply_cslices(tmp, sls):
-                if not isinstance(sls, list): sls = [sls]
-                for sl in sls: tmp = tmp.cslice(sl)
+                if name is None:
+                    for sl in sls: tmp = tmp[sl]
+                else:
+                    for sl in sls: tmp = getattr(tmp, name)(sl)
                 return tmp
 
             for tfn in [fn, fns]:
                 for sls in [slice(0, ref.size // 2), slice(ref.size // 2, 2, -2), np.arange(1, ref.size // 2, 2),
+                            np.array([1, 2, 2, 1, 3]),
                             [slice(ref.size // 2, 2, -2), slice(2, ref.size // 4, 2)],
-                            [np.arange(1, ref.size // 2, 2), slice(ref.size, 2, -2)],
+                            [range(1, ref.size // 2, 2), slice(ref.size, 2, -2)],
                             [np.arange(ref.size // 2, 1, -2), slice(ref.size, 2, -2)]]:
                     test = Catalog.read(tfn)
                     test['RA']
@@ -145,23 +149,35 @@ def test_io():
                     for name in ['Position', 'RA']:
                         assert np.all(test[name] == apply_slices(ref[name], sls))
                         test[name].cmean()
+                    assert test == apply_slices(ref, sls, 'slice')
 
                 for sls in [slice(0, csize * 3 // 4), slice(csize * 3 // 4, 2, -1), np.arange(ref.csize // 2, 1, -2),
+                            np.array([1, 2, 2, 1, 3]),
                             [slice(ref.csize // 2, 2, -2), slice(2, ref.csize // 4, 2)],
-                            [np.arange(1, ref.csize // 2, 2), slice(ref.csize, 2, -2)],
+                            [range(1, ref.csize // 2, 2), slice(ref.csize, 2, -2)],
                             [np.arange(ref.csize // 2, 1, -2), slice(ref.csize, 2, -2)]]:
                     if not isinstance(sls, list): sls = [sls]
                     test = Catalog.read(tfn)
                     test['RA']
-                    test = apply_cslices(test, sls)
+                    test = apply_slices(test, sls, 'cslice')
                     assert test.csize
                     for name in ['Position', 'RA']:
                         assert np.all(test.cget(name) == apply_slices(ref.cget(name), sls))
 
-                    test = Catalog.concatenate(apply_cslices(Catalog.read(tfn), sls), apply_cslices(Catalog.read(tfn), sls))
+                    test = Catalog.cconcatenate(apply_slices(Catalog.read(tfn), sls, 'cslice'), apply_slices(Catalog.read(tfn), sls, 'cslice'))
                     for name in ['Position', 'RA']:
                         col = apply_slices(ref.cget(name), sls)
                         assert np.all(test.cget(name) == np.concatenate([col, col]))
+
+            test = ref.from_array(ref.to_array())
+            assert test == ref
+            test = ref.from_array(ref.to_array().gathered(mpiroot=0), mpiroot=0)
+            assert test == ref
+            fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.npy'), root=0)
+            test.save(fn)
+            test = Catalog.load(fn)
+            assert test.attrs == ref.attrs
+            assert test == ref
 
 
 def test_memory():
@@ -190,7 +206,7 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    #test_mpi()
+    # test_mpi()
     test_slice()
     test_scattered_source()
     test_cslice()

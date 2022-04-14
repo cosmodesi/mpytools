@@ -9,25 +9,11 @@ from . import mpi, utils
 from .mpi import CurrentMPIComm
 from .utils import BaseClass, is_sequence
 from .array import Slice, MPIScatteredSource, MPIScatteredArray
-from .io import FileStack, _select_columns
-
-
-def vectorize_columns(func):
-
-    @functools.wraps(func)
-    def wrapper(self, column, **kwargs):
-        if not is_sequence(column):
-            return func(self, column, **kwargs)
-        toret = [func(self, col, **kwargs) for col in column]
-        if all(t is None for t in toret):  # in case not broadcast to all ranks
-            return None
-        return np.asarray(toret)
-
-    return wrapper
+from .io import FileStack, select_columns
 
 
 def _get_shape(size, itemshape):
-    # join size and itemshape to get total shape
+    # Join size and itemshape to get total shape
     if np.ndim(itemshape) == 0:
         return (size, itemshape)
     return (size,) + tuple(itemshape)
@@ -57,6 +43,47 @@ def _dict_to_array(data, struct=True):
     else:
         array = np.array([col for _, col in array])
     return array
+
+
+@CurrentMPIComm.enable
+def cast_array(array, return_type=None, mpicomm=None):
+    """
+    Cast input numpy array.
+
+    Parameters
+    ----------
+    array : array
+        Array to be cast.
+
+    return_type : str, default=None
+        If ``None``, directly return ``array``.
+        If "ndarray", return :class:`np.ndarray` instance.
+        If "scattered", return :class:`MPIScatteredArray` instance.
+
+    mpicomm : MPI communicator, default=None
+        The current MPI communicator.
+
+    Returns
+    -------
+    array : array, MPIScatteredArray
+    """
+    if return_type is None:
+        return array
+    return_type = return_type.lower()
+    if return_type == 'scattered':
+        return MPIScatteredArray(array, mpicomm=mpicomm)
+    if return_type in ['array', 'ndarray']:
+        return np.array(array, copy=False)
+    raise ValueError('return_type must be in ["scattered", "array", "ndarray"]')
+
+
+def cast_array_wrapper(func):
+    """Method wrapper applying :func:`cast_array` on result."""
+    @functools.wraps(func)
+    def wrapper(self, *args, return_type='scattered', **kwargs):
+        return cast_array(func(self, *args, **kwargs), return_type=return_type, mpicomm=self.mpicomm)
+
+    return wrapper
 
 
 class BaseCatalog(BaseClass):
@@ -155,7 +182,7 @@ class BaseCatalog(BaseClass):
 
     @property
     def csize(self):
-        """Return catalog global size, i.e. sum of size in each process."""
+        """Return catalog collective size, i.e. sum of size within each process."""
         return self.mpicomm.allreduce(len(self))
 
     def columns(self, include=None, exclude=None):
@@ -165,17 +192,17 @@ class BaseCatalog(BaseClass):
         Parameters
         ----------
         include : list, string, default=None
-            Single or list of *regex* patterns to select column names to include.
+            Single or list of *regex* or Unix-style patterns to select column names to include.
             Defaults to all columns.
 
         exclude : list, string, default=None
-            Single or list of *regex* patterns to select column names to exclude.
+            Single or list of *regex* or Unix-style patterns to select column names to exclude.
             Defaults to no columns.
 
         Returns
         -------
         columns : list
-            Return catalog column names, after optional selections.
+            Catalog column names, after optional selections.
         """
         toret = None
 
@@ -184,7 +211,7 @@ class BaseCatalog(BaseClass):
             source = getattr(self, '_source', None)
             if source is not None:
                 columns += [column for column in source.columns if column not in columns]
-            toret = _select_columns(columns, include=include, exclude=exclude)
+            toret = select_columns(columns, include=include, exclude=exclude)
 
         return self.mpicomm.bcast(toret, root=self.mpiroot)
 
@@ -196,53 +223,58 @@ class BaseCatalog(BaseClass):
         """Iterate on catalog columns."""
         return iter(self.data)
 
+    @cast_array_wrapper
     def cindices(self):
         """Row numbers in the global catalog."""
-        sizes = self.mpicomm.allgather(len(self))
-        sizes = np.cumsum([0] + sizes)
-        return sizes[self.mpicomm.rank] + np.arange(len(self))
+        cumsize = sum(self.mpicomm.allgather(len(self))[:self.mpicomm.rank])
+        return cumsize + np.arange(len(self))
 
+    @cast_array_wrapper
+    def empty(self, itemshape=(), dtype='f8'):
+        """Empty array of size :attr:`size`."""
+        return np.empty(_get_shape(len(self), itemshape), dtype=dtype)
+
+    @cast_array_wrapper
     def zeros(self, itemshape=(), dtype='f8'):
-        """Return array of size :attr:`size` filled with zero."""
+        """Array of size :attr:`size` filled with zero."""
         return np.zeros(_get_shape(len(self), itemshape), dtype=dtype)
 
+    @cast_array_wrapper
     def ones(self, itemshape=(), dtype='f8'):
-        """Return array of size :attr:`size` filled with one."""
+        """Array of size :attr:`size` filled with one."""
         return np.ones(_get_shape(len(self), itemshape), dtype=dtype)
 
+    @cast_array_wrapper
     def full(self, fill_value, itemshape=(), dtype='f8'):
-        """Return array of size :attr:`size` filled with ``fill_value``."""
+        """Array of size :attr:`size` filled with ``fill_value``."""
         return np.full(_get_shape(len(self), itemshape), fill_value, dtype=dtype)
 
+    @cast_array_wrapper
     def falses(self, itemshape=()):
-        """Return array of size :attr:`size` filled with ``False``."""
+        """Array of size :attr:`size` filled with ``False``."""
         return self.zeros(itemshape=itemshape, dtype=np.bool_)
 
+    @cast_array_wrapper
     def trues(self, itemshape=()):
-        """Return array of size :attr:`size` filled with ``True``."""
+        """Array of size :attr:`size` filled with ``True``."""
         return self.ones(itemshape=itemshape, dtype=np.bool_)
 
+    @cast_array_wrapper
     def nans(self, itemshape=()):
-        """Return array of size :attr:`size` filled with :attr:`numpy.nan`."""
+        """Array of size :attr:`size` filled with :attr:`np.nan`."""
         return self.ones(itemshape=itemshape) * np.nan
 
     @property
     def has_source(self):
+        """Whether a "source" (typically :class:`FileStack` instance) is attached to current catalog."""
         return getattr(self, '_source', None) is not None
 
-    def get(self, column, *args, return_type='scattered', **kwargs):
-        """Return catalog (local) column ``column`` if exists, else return provided default."""
-
-        def cast(array):
-            if return_type is None:
-                return array
-            return_type_lower = return_type.lower()
-            if return_type_lower == 'scattered':
-                return MPIScatteredArray(array, mpicomm=self.mpicomm)
-            if return_type_lower in ['array', 'ndarray']:
-                return np.array(array, copy=False)
-            raise ValueError('return_type must be in ["scattered", "array", "ndarray"]')
-
+    @cast_array_wrapper
+    def get(self, column, *args, **kwargs):
+        """
+        Return catalog (local) column ``column`` if exists, else return provided default.
+        Pass ``return_type`` to specify output type, see :func:`cast_array`.
+        """
         has_default = False
         if args:
             if len(args) > 1:
@@ -255,31 +287,44 @@ class BaseCatalog(BaseClass):
             has_default = True
             default = kwargs['default']
         if column in self.data:
-            return cast(self.data[column])
+            return self.data[column]
         # if not in data, try in _source
         if self.has_source and column in self._source.columns:
             self.data[column] = self._source.read(column)
-            return cast(self.data[column])
+            return self.data[column]
         if has_default:
             return default
         raise KeyError('Column {} does not exist'.format(column))
 
     def set(self, column, item):
         """Set column of name ``column``."""
-        self.data[column] = item
+        self.data[column] = np.asarray(item)
 
     def cget(self, column, mpiroot=None):
         """
-        Return on process rank ``root`` catalog global column ``column`` if exists, else return provided default.
-        If ``mpiroot`` is ``None`` or ``Ellipsis`` return result on all processes.
+        Return on rank ``mpiroot`` catalog global column ``column`` if exists, else provided default.
+        If ``mpiroot`` is ``None`` or ``Ellipsis`` result is broadcast on all processes.
         """
         if mpiroot is None: mpiroot = Ellipsis
         return self.get(column, return_type='scattered').gathered(mpiroot=mpiroot)
 
+    def slice(self, *args):
+        """
+        Slice catalog (locally), e.g.:
+        >>> catalog.slice(0, 100, 1)  # catalog of local size :attr:`size` <= 100
+        Same reference to :attr:`attrs`.
+        """
+        new = self.copy()
+        name = Slice(*args).idx
+        new.data = {column: self.get(column, return_type=None)[name] for column in self.data}
+        if self.has_source:
+            new._source = self._source.slice(name)
+        return new
+
     def cslice(self, *args):
         """
-        Perform global slicing of catalog,
-        e.g. ``catalog.cslice(0, 100, 1)`` will return a new catalog of global size ``100``.
+        Slice catalog (collectively), e.g.:
+        >>> catalog.cslice(0, 100, 1)  # catalog of collective size :attr:`csize`  <= 100
         Same reference to :attr:`attrs`.
         """
         new = self.copy()
@@ -295,18 +340,16 @@ class BaseCatalog(BaseClass):
         return new
 
     @classmethod
-    def concatenate(cls, *others, keep_order=False):
+    def concatenate(cls, *others):
         """
-        Concatenate catalogs together.
+        Concatenate catalogs together, locally:
+        no data is exchanged between processes, but order is not preserved,
+        e.g. the first rank will receive the beginning of all input catalogs.
 
         Parameters
         ----------
         others : list
             List of :class:`BaseCatalog` instances.
-
-        keep_order : bool, default=False
-            Whether to keep row order, which requires costly MPI-gather/scatter operations.
-            If ``False``, rows on each MPI process will be added to those of the same MPI process.
 
         Returns
         -------
@@ -336,19 +379,10 @@ class BaseCatalog(BaseClass):
                 raise ValueError('Cannot extend samples as columns do not match: {} != {}.'.format(other_columns, new_columns))
 
         in_data = {column: any(column in other.data for other in others) for column in new_columns}
-        if keep_order and any(in_data.values()):
-            source = []
-            for other in others:
-                cumsizes = np.cumsum([0] + other.mpicomm.allgather(other.size))
-                source.append(MPIScatteredSource(slice(cumsizes[other.mpicomm.rank], cumsizes[other.mpicomm.rank + 1], 1)))
-            source = MPIScatteredSource.concatenate(*source)
 
         for column in new_columns:
             if in_data[column]:
-                if keep_order:
-                    new[column] = source.get([other.get(column, return_type=None) for other in others])
-                else:
-                    new[column] = np.concatenate([other.get(column, return_type=None) for other in others])
+                new[column] = np.concatenate([other.get(column, return_type=None) for other in others], axis=0)
 
         source = [other._source for other in others if other.has_source]
         if source:
@@ -358,17 +392,83 @@ class BaseCatalog(BaseClass):
         return new
 
     def append(self, other, **kwargs):
-        """Extend catalog with ``other``."""
+        """(Locally) append ``other`` to current catalog."""
         return self.concatenate(self, other, **kwargs)
 
     def extend(self, other, **kwargs):
-        """Extend catalog with ``other``."""
+        """(Locally) extend (in-place) current catalog with ``other``."""
         new = self.append(self, other, **kwargs)
         self.__dict__.update(new.__dict__)
 
+    @classmethod
+    def cconcatenate(cls, *others):
+        """
+        Concatenate catalogs together, preserving global order.
+
+        Parameters
+        ----------
+        others : list
+            List of :class:`BaseCatalog` instances.
+
+        Returns
+        -------
+        new : BaseCatalog
+
+        Warning
+        -------
+        :attr:`attrs` of returned catalog contains, for each key, the last value found in ``others`` :attr:`attrs` dictionaries.
+        """
+        if not others:
+            raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
+        if len(others) == 1 and is_sequence(others[0]):
+            others = others[0]
+        attrs = {}
+        for other in others: attrs.update(other.attrs)
+        others = [other for other in others if other.columns()]
+
+        new = others[0].copy()
+        new.attrs = attrs
+        new_columns = new.columns()
+
+        for other in others:
+            other_columns = other.columns()
+            if other.mpicomm is not new.mpicomm:
+                raise ValueError('Input catalogs with different mpicomm')
+            if new_columns and other_columns and set(other_columns) != set(new_columns):
+                raise ValueError('Cannot extend samples as columns do not match: {} != {}.'.format(other_columns, new_columns))
+
+        in_data = {column: any(column in other.data for other in others) for column in new_columns}
+        if any(in_data.values()):
+            source = []
+            for other in others:
+                cumsizes = np.cumsum([0] + other.mpicomm.allgather(other.size))
+                source.append(MPIScatteredSource(slice(cumsizes[other.mpicomm.rank], cumsizes[other.mpicomm.rank + 1], 1)))
+            source = MPIScatteredSource.cconcatenate(*source)
+
+        for column in new_columns:
+            if in_data[column]:
+                new[column] = source.get([other.get(column, return_type=None) for other in others])
+
+        source = [other._source for other in others if other.has_source]
+        if source:
+            source = FileStack.cconcatenate(*source)
+            new._source = source
+
+        return new
+
+    def cappend(self, other, **kwargs):
+        """(Collectively) append ``other`` to current catalog."""
+        return self.cconcatenate(self, other, **kwargs)
+
+    def cextend(self, other, **kwargs):
+        """(Collectively) extend (in-place) current catalog with ``other``."""
+        new = self.cappend(self, other, **kwargs)
+        self.__dict__.update(new.__dict__)
+
+    @cast_array_wrapper
     def to_array(self, columns=None, struct=True):
         """
-        Return catalog as *numpy* array.
+        Return catalog as numpy array.
 
         Parameters
         ----------
@@ -377,7 +477,11 @@ class BaseCatalog(BaseClass):
 
         struct : bool, default=True
             Whether to return structured array, with columns accessible through e.g. ``array['Position']``.
-            If ``False``, *numpy* will attempt to cast types of different columns.
+            If ``False``, numpy will attempt to cast types of different columns.
+
+        return_type : str, default=None
+            If ``None`` or "ndarray", return :class:`np.ndarray` instance.
+            If "scattered", return :class:`MPIScatteredArray` instance.
 
         Returns
         -------
@@ -385,7 +489,7 @@ class BaseCatalog(BaseClass):
         """
         if columns is None:
             columns = self.columns()
-        data = {col: self[col] for col in columns}
+        data = {column: self.get(column, return_type=None) for column in columns}
         return _dict_to_array(data, struct=struct)
 
     @classmethod
@@ -396,7 +500,7 @@ class BaseCatalog(BaseClass):
 
         Parameters
         ----------
-        array : array, dict
+        array : array, MPIScatteredArray, dict
             Input array to turn into catalog.
 
         columns : list, default=None
@@ -435,9 +539,9 @@ class BaseCatalog(BaseClass):
             value = None
             if mpicomm.rank == mpiroot or mpiroot is None:
                 if isstruct:
-                    value = array.get(column, return_type=None)
+                    value = np.asarray(array[column])
                 else:
-                    value = columns.index(column)
+                    value = np.asarray(array[columns.index(column)])
             if mpiroot is not None:
                 return mpi.scatter_array(value, mpicomm=mpicomm, root=mpiroot)
             return value
@@ -445,27 +549,23 @@ class BaseCatalog(BaseClass):
         new.data = {column: get(column) for column in columns}
         return new
 
-    def copy(self, columns=None):
-        """Return copy, including column names ``columns`` (defaults to all columns)."""
+    def copy(self):
+        """Shallow copy."""
         new = super(BaseCatalog, self).__copy__()
-        if columns is None: columns = list(self.data.keys())
-        new.data = {col: self[col] if col in self else None for col in columns}
+        new.data = self.data.copy()
         if new.has_source: new._source = self._source.copy()
         import copy
-        for name in new._attrs:
-            if hasattr(self, name):
-                tmp = copy.copy(getattr(self, name))
-                setattr(new, name, tmp)
+        for name in self._attrs:
+            if hasattr(self, name): setattr(new, name, copy.deepcopy(getattr(self, name)))
         return new
 
-    def deepcopy(self, columns=None):
-        """Return copy, including column names ``columns`` (defaults to all columns)."""
+    def deepcopy(self):
+        """Deep copy."""
+        new = self.copy()
+        new.data = {column: self.get(column, return_type='ndarray').copy() for column in new.data}
         import copy
-        new = self.copy(columns=columns)
         for name in self._attrs:
-            if hasattr(self, name):
-                setattr(new, name, copy.deepcopy(getattr(self, name)))
-        new.data = {col: self[col].copy() for col in new}
+            if hasattr(self, name): setattr(new, name, copy.deepcopy(getattr(self, name)))
         return new
 
     def __getstate__(self):
@@ -492,21 +592,13 @@ class BaseCatalog(BaseClass):
         return new
 
     def __getitem__(self, name):
-        """Get catalog column ``name`` if string, else return copy with local slice."""
+        """Get catalog column ``name`` if string, else call :meth:`slice`."""
         if isinstance(name, str):
             return self.get(name)
-        new = self.copy()
-        if isinstance(name, slice):
-            new.data = {col: self[col][name] for col in self.data}
-            if self.has_source:
-                new._source = self._source.slice(name)
-        else:
-            new.data = {col: self[col][name] for col in self.columns()}
-            if self.has_source: del new._source
-        return new
+        return self.slice(name)
 
     def __setitem__(self, name, item):
-        """Set catalog column ``name`` if string, else set slice ``name`` of all columns to ``item``."""
+        """Set catalog column ``name`` if string, else set local slice ``name`` of all columns to ``item``."""
         if isinstance(name, str):
             return self.set(name, item)
         for col in self.columns():
@@ -535,30 +627,44 @@ class BaseCatalog(BaseClass):
         if set(other_columns) != set(self_columns):
             return False
         assert self.mpicomm == other.mpicomm
-        self, other = self.cslice(0, None), other.cslice(0, None)
+        self, other = self.cslice(0, None), other.cslice(0, None)  # make sure we have the same size on each rank
         for col in self_columns:
             self_value = self.get(col)
             other_value = other.get(col)
             if not all(self.mpicomm.allgather(np.all(self_value == other_value))):
                 return False
+        return True
 
     @classmethod
     def read(cls, *args, **kwargs):
+        """
+        Read catalog from (list of) input file names.
+        Specify ``filetype`` if file extension is not recognised.
+        See specific :class:`io.BaseFile` subclass (e.g. :class:`io.FitsFile`) for optional arguments.
+        """
         source = FileStack(*args, **kwargs)
         new = cls(attrs={'header': source.header}, mpicomm=source.mpicomm)
         new._source = source
         return new
 
     def write(self, *args, **kwargs):
-        """Save catalog to ``filename``."""
+        """
+        Save catalog to (list of) output file names.
+        Specify ``filetype`` if file extension is not recognised.
+        See specific :class:`io.BaseFile` subclass (e.g. :class:`io.FitsFile`) for optional arguments.
+        """
         source = FileStack(*args, **kwargs)
-        source.write({name: self[name] for name in self.columns()})
+        source.write({name: self.get(name, return_type='ndarray') for name in self.columns()})
 
     @classmethod
     @CurrentMPIComm.enable
     def load(cls, filename, mpicomm=None):
         """
         Load catalog in *npy* binary format from disk.
+
+        Warning
+        -------
+        All data will be gathered on a single process, which may cause out-of-memory errors.
 
         Parameters
         ----------
@@ -586,7 +692,13 @@ class BaseCatalog(BaseClass):
         return cls.from_state(state, mpicomm=mpicomm)
 
     def save(self, filename):
-        """Save catalog to ``filename`` as *npy* file."""
+        """
+        Save catalog to ``filename`` as *npy* file.
+
+        Warning
+        -------
+        All data will be gathered on a single process, which may cause out-of-memory errors.
+        """
         if self.is_mpi_root():
             self.log_info('Saving to {}.'.format(filename))
             utils.mkdir(os.path.dirname(filename))

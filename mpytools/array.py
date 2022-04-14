@@ -1,3 +1,5 @@
+"""Implements MPI-scattered array."""
+
 import numbers
 import math
 
@@ -12,8 +14,32 @@ from .utils import BaseClass, BaseMetaClass, is_sequence
 
 class Slice(BaseClass):
 
+    """Class that handles slices, either as python slice, or indices (numpy arrays)."""
+
     def __init__(self, *args, size=None, copy=False):
-        if len(args) > 1:
+        """
+        Initialize :class:`Slice`, e.g.:
+        >>> Slice(10)  # slice(0, 10, 1)
+        >>> Slice(10, None, -2)
+        >>> Slice(None, size=10)  # slice(0, 10, 1)
+        >>> Slice([1, 2, 2, 4])
+
+        Parameters
+        ----------
+        args : tuple
+            Arguments for python slice, or:
+            - slice
+            - Slice
+            - list / array
+
+        size : int, default=None
+            In case one provides a slice (or arguments for a slice), the total size of the array to be sliced, e.g.:
+            ``Slice(None, size=10)`` is ``Slice(0, 10, 1)``.
+
+        copy : bool, default=False
+            In case an array is provided, whether to copy input array.
+        """
+        if len(args) > 1 or args[0] is None or isinstance(args[0], numbers.Number):
             sl = slice(*args)
         else:
             sl = args[0]
@@ -50,14 +76,28 @@ class Slice(BaseClass):
 
     @property
     def is_array(self):
+        """Whether indexing is performed with an array (instead of python slice)."""
         return not isinstance(self.idx, slice)
 
+    @classmethod
+    def empty(cls):
+        """Return empty slice."""
+        return cls(slice(0, 0, 1))
+
+    def __repr__(self):
+        """String representation of current slice."""
+        if self.is_array:
+            return '{}({})'.format(self.__class__.__name__, self.idx)
+        return '{}({}, {}, {})'.format(self.__class__.__name__, self.idx.start, self.idx.stop, self.idx.step)
+
     def to_array(self, copy=False):
+        """Turn :class:`Slice` into a numpy array."""
         if self.is_array:
             return np.array(self.idx, copy=copy)
         return np.arange(self.idx.start, self.idx.stop, self.idx.step)
 
     def to_slices(self):
+        """Turn :class:`Slice` into a list of python slices."""
         from itertools import groupby
         from operator import itemgetter
         from collections import deque
@@ -95,6 +135,7 @@ class Slice(BaseClass):
             yield self.idx
 
     def split(self, nsplits=1):
+        """Split current :class:`Slice` into ``nsplits`` sub-slices."""
         if self.is_array:
             idxs = np.array_split(self.idx, nsplits)
         else:
@@ -111,6 +152,10 @@ class Slice(BaseClass):
         return [Slice(idx, copy=False) for idx in idxs]
 
     def find(self, *args, return_index=False):
+        """
+        Indices of input :class:`Slice` (built from ``args``) in current slice.
+        With ``return_index = True``, also return indices in input slice.
+        """
         sl2 = self.__class__(*args)
         if self.is_array or sl2.is_array:
             if return_index:
@@ -162,16 +207,12 @@ class Slice(BaseClass):
             return idx, self.__class__(idx2, copy=False)
         return idx
 
-    @classmethod
-    def empty(cls):
-        return cls(slice(0, 0, 1))
-
-    def __repr__(self):
-        if self.is_array:
-            return '{}({})'.format(self.__class__.__name__, self.idx)
-        return '{}({}, {}, {})'.format(self.__class__.__name__, self.idx.start, self.idx.stop, self.idx.step)
-
     def slice(self, *args, return_index=False):
+        """
+        Slice current slice with input :class:`Slice` (built from ``args``), to get:
+        ``all(array[sl1.slice(sl2)] == array[sl1][sl2])``.
+        With ``return_index = True``, also return indices in input slice.
+        """
         sl2 = self.__class__(*args)
         if self.is_array or sl2.is_array:
             idx2 = sl2.to_array()
@@ -209,6 +250,10 @@ class Slice(BaseClass):
         return idx
 
     def shift(self, offset=0, stop=None):
+        """
+        Shift current slice by input ``offset``.
+        Provide ``stop`` to limit the scope of returned :class:`Slice`.
+        """
         if self.is_array:
             idx = self.idx + offset
             idx = idx[idx >= 0]
@@ -226,6 +271,7 @@ class Slice(BaseClass):
         return self.__class__(idx, copy=False)
 
     def __len__(self):
+        """Slice length."""
         if self.is_array:
             return self.idx.size
         return ((-1 if self.idx.stop is None else self.idx.stop) - self.idx.start + (-1)**(self.idx.step > 0)) // self.idx.step + 1
@@ -237,6 +283,7 @@ class Slice(BaseClass):
 
     @property
     def min(self):
+        """Minimum (i.e. minimum index) of the slice."""
         if self.is_array:
             return self.idx.min()
         if self.idx.step < 0:
@@ -245,6 +292,7 @@ class Slice(BaseClass):
 
     @property
     def max(self):
+        """Maximum (i.e. maximum index) of the slice."""
         if self.is_array:
             return self.idx.max()
         if self.idx.step > 0:
@@ -252,6 +300,7 @@ class Slice(BaseClass):
         return self.idx.start
 
     def __eq__(self, other):
+        """Whether two slices are equal."""
         try:
             other = Slice(other)
         except ValueError:
@@ -264,6 +313,10 @@ class Slice(BaseClass):
 
     @classmethod
     def snap(cls, *others):
+        """
+        Snap input slices together, e.g.:
+        >>> Slice.snap(slice(0, 10, 2), slice(10, 20, 2))  # Slice(0, 20, 2)
+        """
         others = [Slice(other) for other in others]
         if any(other.is_array for other in others):
             return [Slice(np.concatenate([other.to_array() for other in others], axis=0))]
@@ -279,6 +332,7 @@ class Slice(BaseClass):
 
     @CurrentMPIComm.enable
     def mpi_send(self, dest, tag=0, blocking=True, mpicomm=None):
+        """Send slice to rank ``dest``."""
         if blocking: send = mpicomm.send
         else: send = mpicomm.isend
         send(self.is_array, dest=dest, tag=tag + 1)
@@ -290,6 +344,7 @@ class Slice(BaseClass):
     @classmethod
     @CurrentMPIComm.enable
     def mpi_recv(cls, source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
+        """Receive slice from ``source``."""
         if mpicomm.recv(source=source, tag=tag + 1):  # is_array
             idx = mpi.recv_array(source=source, tag=tag, mpicomm=mpicomm)
         else:
@@ -298,9 +353,26 @@ class Slice(BaseClass):
 
 
 class MPIScatteredSource(BaseClass):
-
+    """
+    Utility class to manage array slices on different processes,
+    typically useful when applying collective slicing or concatenate operations.
+    """
     @CurrentMPIComm.enable
     def __init__(self, *slices, csize=None, mpicomm=None):
+        """
+        Initialize :class:`MPIScatteredSource`.
+
+        Parameters
+        ----------
+        slices : tuple
+            Sequence of input :class:`Slice`, representing the indices of the global array on the local rank.
+
+        csize : int, default=None
+            The collective array slice, passed as ``size`` to :class:`Slice`.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
+        """
         # let's restrict to disjoint slices...
         self.mpicomm = mpicomm
         self.slices = [Slice(sl, size=csize) for sl in slices]
@@ -311,15 +383,33 @@ class MPIScatteredSource(BaseClass):
 
     @property
     def size(self):
+        """The (total) array length on this rank."""
         if getattr(self, '_size', None) is None:
             self._size = sum(sl.size for sl in self.slices)
         return self._size
 
     @property
     def csize(self):
+        """The collective array length."""
         return self.mpicomm.allreduce(self.size)
 
     def get(self, arrays, *args):
+        """
+        Return a global slice of input arrays.
+
+        Parameters
+        ----------
+        arrays : tuple, list
+            List of input arrays, corresponding to indices in :attr:`slices`.
+
+        args : tuple
+            Sequence of global slices/indices to return array for.
+
+        Returns
+        -------
+        array : array
+            Array corresponding to input slices.
+        """
         # Here, slice in global coordinates
         if not is_sequence(arrays):
             arrays = [arrays]
@@ -357,7 +447,8 @@ class MPIScatteredSource(BaseClass):
         return np.concatenate(toret)
 
     @classmethod
-    def concatenate(cls, *others):
+    def cconcatenate(cls, *others):
+        """Concatenate input :class:`MPIScatteredArray`, collectively, i.e. preserving order accross all ranks."""
         if not others:
             raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
         if len(others) == 1 and is_sequence(others[0]):
@@ -368,26 +459,72 @@ class MPIScatteredSource(BaseClass):
             cumsize += other.csize
         return cls(*slices)
 
-    def extend(self, other, **kwargs):
-        new = self.concatenate(self, other, **kwargs)
+    def cappend(self, other, **kwargs):
+        """Append ``other`` to current :class:`MPIScatteredSource`."""
+        return self.cconcatenate(self, [other], **kwargs)
+
+    def cextend(self, other, **kwargs):
+        """Extend (in-place) current :class:`MPIScatteredSource` with ``other``."""
+        new = self.cappend(self, other, **kwargs)
         self.__dict__.update(new.__dict__)
 
 
 class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
 
+    """
+    A class representing a numpy array scattered on several processes.
+    It can be used transparently with any numpy function (in which case computation is local).
+    """
+
     _HANDLED_TYPES = (np.ndarray, numbers.Number)
 
     @CurrentMPIComm.enable
-    def __init__(self, value=None, copy=False, dtype=None, mpicomm=None, mpiroot=None):
-        """Initalize :class:`MPIScatteredArray`."""
+    def __init__(self, value=None, copy=False, dtype=None, mpiroot=None, mpicomm=None):
+        """
+        Initalize :class:`MPIScatteredArray`.
+
+        Parameters
+        ----------
+        value : array
+            Local array value.
+
+        copy : bool, default=False
+            Whether to copy input array.
+
+        dtype : dtype, default=None
+            If provided, enforce this dtype.
+
+        mpiroot : int, default=None
+            If ``None``, input array is assumed to be scattered across all ranks.
+            Else the MPI rank where input array is gathered.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
+        """
         self.mpicomm = mpicomm
         if mpiroot is None or self.mpicomm.rank == mpiroot:
-            value = np.array(value, copy=copy, dtype=dtype)
+            value = np.array(value, copy=copy, dtype=dtype, order='C')
         if mpiroot is not None:
             value = mpi.scatter_array(value, mpicomm=mpicomm, root=mpiroot)
         self.value = value
 
+    @classmethod
+    def falses(cls, *args, **kwargs):
+        """Return array full of ``False``."""
+        return cls.zeros(*args, **kwargs, dtype=np.bool_)
+
+    @classmethod
+    def trues(cls, *args, **kwargs):
+        """Return array full of ``True``."""
+        return cls.ones(*args, **kwargs, dtype=np.bool_)
+
+    @classmethod
+    def nans(cls, *args, **kwargs):
+        """Return array full of ``NaN``."""
+        return cls.ones(*args, **kwargs) * np.nan
+
     def __mul__(self, other):
+        # Multiply array
         r = self.copy()
         r.value = r.value * other
         return r
@@ -397,6 +534,7 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         return self
 
     def __div__(self, other):
+        # Divide array
         r = self.copy()
         r.value = r.value / other
         return r
@@ -453,7 +591,10 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
             return cast(result)
 
     def __getitem__(self, index):
-        return self.value.__getitem__(index)
+        toret = self.value.__getitem__(index)
+        if toret.ndim == 0:  # scalar
+            return toret
+        return self.__class__(toret, mpicomm=self.mpicomm)
 
     def __setitem__(self, index, value):
         return self.value.__setitem__(index, value)
@@ -469,10 +610,12 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
 
     @property
     def csize(self):
+        """Collective array size."""
         return self.mpicomm.allreduce(self.value.size)
 
     @property
     def cshape(self):
+        """Collective array shape."""
         return (self.mpicomm.allreduce(self.value.shape[0]),) + self.value.shape[1:]
 
     def __len__(self):
@@ -480,8 +623,15 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
 
     @cshape.setter
     def cshape(self, cshape):
+        """
+        Set collective shape attr:`cshape`, e.g.:
+        >>> array.cshape = (100, 2)
+
+        This will induce data exchange between various processes if local size cannot be divided by ``prod(cshape[1:])``.
+        """
         if np.ndim(cshape) == 0:
             cshape = (cshape,)
+        cshape = tuple(cshape)
         unknown = [s < 0 for s in cshape]
         if sum(unknown) > 1:
             raise ValueError('can only specify one unknown dimension')
@@ -500,11 +650,20 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         self.value.shape = (-1,) + cshape[1:]
 
     def slice(self, *args):
+        """
+        Perform local array slice, e.g.:
+        >>> array.slice(0, 10, 2)
+        >>> array.slice([1, 2, 2])
+        """
         new = self.copy()
         new.value = self.value[Slice(*args, size=self.size).idx]
         return new
 
     def cslice(self, *args):
+        """Perform collective array slice, e.g.:
+        >>> array.cslice(0, 10, 2)
+        >>> array.cslice([1, 2, 2])
+        """
         new = self.copy()
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(len(self)))
         global_slice = Slice(*args, size=cumsizes[-1])
@@ -514,7 +673,8 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         return new
 
     @classmethod
-    def concatenate(cls, *others, axis=0):
+    def cconcatenate(cls, *others, axis=0):
+        """Concatenate input :class:`MPIScatteredArray`, collectively, i.e. preserving order accross all ranks."""
         if not others:
             raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
         if len(others) == 1 and is_sequence(others[0]):
@@ -528,57 +688,179 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
             for other in others:
                 cumsizes = np.cumsum([0] + other.mpicomm.allgather(len(other)))
                 source.append(MPIScatteredSource(slice(cumsizes[other.mpicomm.rank], cumsizes[other.mpicomm.rank + 1], 1)))
-            source = MPIScatteredSource.concatenate(*source)
+            source = MPIScatteredSource.cconcatenate(*source)
             new.value = source.get([other.value for other in others])
         return new
 
-    def extend(self, other, **kwargs):
-        """Extend catalog with ``other``."""
-        return self.concatenate(self, [other], **kwargs)
+    def cappend(self, other, **kwargs):
+        """Append ``other`` to current :class:`MPIScatteredSource`."""
+        return self.cconcatenate(self, [other], **kwargs)
 
-    def append(self, other, **kwargs):
-        """Extend catalog with ``other``."""
-        new = self.extend(self, other, **kwargs)
+    def cextend(self, other, **kwargs):
+        """Extend (in-place) current :class:`MPIScatteredSource` with ``other``."""
+        new = self.cappend(self, other, **kwargs)
         self.__dict__.update(new.__dict__)
 
     def gathered(self, mpiroot=0):
+        """Return numpy array gathered on rank ``mpiroot`` (``None`` to gather on all ranks)."""
         return mpi.gather_array(self.value, mpicomm=self.mpicomm, root=mpiroot)
 
     def csort(self, axis=0, kind=None):
+        """
+        Sort input array ``data`` along ``axis``.
+        Naive implementation: array is gathered, sorted, and scattered again.
+        Faster than naive distributed sorts (bitonic, transposition)...
+
+        Parameters
+        ----------
+        axis : int, default=-1
+            Sorting axis.
+
+        kind : string, default=None
+            Sorting algorithm. The default is ‘quicksort’.
+            See :func:`numpy.sort`.
+
+        mpicomm : MPI communicator
+            Communicator. Defaults to current communicator.
+
+        Returns
+        -------
+        out : array
+            Sorted array (scattered).
+        """
         # import mpsort
         # self.value = mpsort.sort(self.value, orderby=None, comm=self.mpicomm, tuning=[])
         self.value = mpi.sort_array(self.value, axis=axis, kind=kind, mpicomm=self.mpicomm)  # most naive implementation
 
     def csum(self, axis=0):
+        """Collective array sum along ``axis``."""
         return mpi.sum_array(self.value, axis=axis, mpicomm=self.mpicomm)
 
     def caverage(self, weights=None, axis=0):
+        """Collective array average along ``axis``."""
         return mpi.average_array(self.value, weights=weights, axis=axis, mpicomm=self.mpicomm)
 
     def cmean(self, axis=0):
+        """Collective array mean along ``axis``."""
         return self.caverage(axis=axis)
 
     def cvar(self, axis=0, fweights=None, aweights=None, ddof=1):
+        """
+        Estimate collective variance, given weights.
+        See :func:`numpy.var`.
+        TODO: allow several axes.
+
+        Parameters
+        ----------
+        axis : int, default=-1
+            Axis along which the variance is computed.
+
+        fweights : array, int, default=None
+            1D array of integer frequency weights; the number of times each
+            observation vector should be repeated.
+
+        aweights : array, default=None
+            1D array of observation vector weights. These relative weights are
+            typically large for observations considered "important" and smaller for
+            observations considered less "important". If ``ddof=0`` the array of
+            weights can be used to assign probabilities to observation vectors.
+
+        ddof : int, default=1
+            Note that ``ddof=1`` will return the unbiased estimate, even if both
+            `fweights` and `aweights` are specified, and ``ddof=0`` will return
+            the simple average.
+
+        mpicomm : MPI communicator
+            Current MPI communicator.
+
+        Returns
+        -------
+        out : array
+            The variance of the variables.
+        """
         return mpi.var_array(self.value, axis=axis, fweights=fweights, aweights=aweights, ddof=ddof, mpicomm=self.mpicomm)
 
     def cstd(self, axis=0, fweights=None, aweights=None, ddof=1):
-        return mpi.std_array(self.value, axis=axis, fweights=fweights, aweights=aweights, ddof=ddof, mpicomm=self.mpicomm)
+        """
+        Collective weighted standard deviation along axis ``axis``.
+        Simply take square root of :meth:`cvar` result.
+        TODO: allow for several axes.
+        """
+        return np.sqrt(self.cvar(axis=axis, fweights=fweights, aweights=aweights, ddof=ddof))
 
     def cmin(self, axis=0):
+        """Collective minimum along ``axis``."""
         return mpi.min_array(self.value, axis=axis, mpicomm=self.mpicomm)
 
     def cmax(self, axis=0):
-        """Return global maximum of column(s) ``column``."""
+        """Collective maximum along ``axis``."""
         return mpi.max_array(self.value, axis=axis, mpicomm=self.mpicomm)
 
     def cargmin(self, axis=0):
+        """Local index and rank of collective minimum along ``axis``."""
         return mpi.argmin_array(self.value, axis=axis, mpicomm=self.mpicomm)
 
     def cargmax(self, axis=0):
-        """Return global maximum of column(s) ``column``."""
+        """Local index and rank of collective maximum along ``axis``."""
         return mpi.argmax_array(self.value, axis=axis, mpicomm=self.mpicomm)
 
     def cquantile(self, q, weights=None, axis=0, interpolation='linear'):
+        """
+        Return weighted array quantiles.
+        Naive implementation: array is gathered before taking quantile.
+
+        Parameters
+        ----------
+        a : array
+            Input array or object that can be converted to an array.
+
+        q : tuple, list, array
+            Quantile or sequence of quantiles to compute, which must be between
+            0 and 1 inclusive.
+
+        weights : array, default=None
+            An array of weights associated with the values in ``a``. Each value in
+            ``a`` contributes to the cumulative distribution according to its associated weight.
+            The weights array can either be 1D (in which case its length must be
+            the size of ``a`` along the given axis) or of the same shape as ``a``.
+            If ``weights=None``, then all data in ``a`` are assumed to have a
+            weight equal to one.
+            The only constraint on ``weights`` is that ``sum(weights)`` must not be 0.
+
+        axis : int, tuple, default=None
+            Axis or axes along which the quantiles are computed. The
+            default is to compute the quantile(s) along a flattened
+            version of the array.
+
+        interpolation : {'linear', 'lower', 'higher', 'midpoint', 'nearest'}, default='linear'
+            This optional parameter specifies the interpolation method to
+            use when the desired quantile lies between two data points
+            ``i < j``:
+
+            * linear: ``i + (j - i) * fraction``, where ``fraction``
+              is the fractional part of the index surrounded by ``i``
+              and ``j``.
+            * lower: ``i``.
+            * higher: ``j``.
+            * nearest: ``i`` or ``j``, whichever is nearest.
+            * midpoint: ``(i + j) / 2``.
+
+        Returns
+        -------
+        quantile : scalar, array
+            If ``q`` is a single quantile and ``axis=None``, then the result
+            is a scalar. If multiple quantiles are given, first axis of
+            the result corresponds to the quantiles. The other axes are
+            the axes that remain after the reduction of ``a``. If the input
+            contains integers or floats smaller than ``float64``, the output
+            data-type is ``float64``. Otherwise, the output data-type is the
+            same as that of the input. If ``out`` is specified, that array is
+            returned instead.
+
+        Note
+        ----
+        Inspired from https://github.com/minaskar/cronus/blob/master/cronus/plot.py.
+        """
         return mpi.weighted_quantile_array(self.value, q, weights=weights, axis=axis, interpolation=interpolation, mpicomm=self.mpicomm)
 
 
@@ -609,3 +891,26 @@ for name in ['size']:
 for name in ['shape', 'dtype']:
 
     setattr(MPIScatteredArray, name, _make_getter_setter(name))
+
+
+def _make_constructor(name):
+
+    @classmethod
+    @CurrentMPIComm.enable
+    def constructor(cls, *args, mpicomm=None, **kwargs):
+        cshape = kwargs.pop('cshape', None)
+        if cshape is not None:
+            if np.ndim(cshape) == 0:
+                cshape = (cshape,)
+            cshape = tuple(cshape)
+            size = (mpicomm.rank + 1) * cshape[0] // mpicomm.size - mpicomm.rank * cshape[0] // mpicomm.size
+            kwargs['shape'] = (size,) + cshape[1:]
+        array = getattr(np, name)(*args, **kwargs)
+        return cls(array, mpicomm=mpicomm)
+
+    return constructor
+
+
+for name in ['empty', 'zeros', 'ones', 'full']:
+
+    setattr(MPIScatteredArray, name, _make_constructor(name))

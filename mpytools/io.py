@@ -11,8 +11,25 @@ from .utils import BaseClass, is_sequence
 from .array import Slice, MPIScatteredSource
 
 
-def _select_columns(columns, include=None, exclude=None):
+def select_columns(columns, include=None, exclude=None):
+    """
+    Select input column names.
 
+    Parameters
+    ----------
+    include : list, string, default=None
+        Single or list of *regex* or Unix-style patterns to select column names to include.
+        Defaults to all columns.
+
+    exclude : list, string, default=None
+        Single or list of *regex* or Unix-style patterns to select column names to exclude.
+        Defaults to no columns.
+
+    Returns
+    -------
+    columns : list
+        Column names, after optional selections.
+    """
     def toregex(name):
         return name.replace('.', r'\.').replace('*', '(.*)')
 
@@ -76,18 +93,18 @@ class FileStack(BaseClass):
 
         Parameters
         ----------
-        filename : string, list of strings
-            File name(s).
+        files : string, list of strings
+            File name(s), or :class:`BaseFile` instances.
 
-        attrs : dict, default=None
-            File attributes. Will be complemented by those read from disk.
-            These will eventually be written to disk.
-
-        mode : string, default=''
-            If 'r', read file header (necessary for further reading of file columns).
+        filetype : string, type, default=None
+            :class:`BaseFile` to use to read input files.
+            See :func:`get_filetype`.
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
+
+        kwargs : dict
+            Optional arguments for :class:`BaseFile` instances.
         """
         self.files = []
         self.mpicomm = mpicomm
@@ -103,6 +120,10 @@ class FileStack(BaseClass):
         self.mpiroot = 0
 
     def __enter__(self):
+        """
+        To use :class:`FileStack` as a context manager,
+        >>> with FileStack(filenames) as fs:
+        """
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
@@ -114,20 +135,24 @@ class FileStack(BaseClass):
 
     @property
     def filesizes(self):
+        """List of file (total) sizes."""
         return [file.csize for file in self.files]
 
     @property
     def cfilesize(self):
+        """Sum of file sizes."""
         return sum(self.filesizes)
 
     @property
     def slices(self):
+        """Local slice (within rows 0 to :attr:`cfilesize`)."""
         if getattr(self, '_slices', None) is None:
             self._slices = [Slice(self.mpicomm.rank * self.cfilesize // self.mpicomm.size, (self.mpicomm.rank + 1) * self.cfilesize // self.mpicomm.size, 1)]
         return self._slices
 
     @property
     def columns(self):
+        """Columns shared by all files."""
         if getattr(self, '_columns', None) is None:
             if not self.files:
                 return []
@@ -136,6 +161,7 @@ class FileStack(BaseClass):
 
     @property
     def header(self):
+        """Full header, concatenating all file headers."""
         if getattr(self, '_header', None) is None:
             self._header = {}
             for file in self.files:
@@ -143,6 +169,10 @@ class FileStack(BaseClass):
         return self._header
 
     def fileslices(self, return_index=False):
+        """
+        For each local slice, yield slices in each file.
+        Pass ``return_index = True`` to also yield indices in current local slice corresponding to each file slice.
+        """
         # catalog slices
         cumsizes = np.cumsum([0] + self.filesizes)
         for sli in self.slices:
@@ -151,23 +181,28 @@ class FileStack(BaseClass):
 
     @property
     def size(self):
+        """Local size of columns to be read."""
         return sum(sl.size for sl in self.slices)
 
     @property
     def csize(self):
+        """Collective size of columns to be read."""
         return self.mpicomm.allreduce(self.size)
 
     @property
     def _is_slice_array(self):
+        # Is any of slices an index array?
         return any(utils.list_concatenate(self.mpicomm.allgather([sl.is_array for sl in self.slices])))
 
     def slice(self, *args):
+        """Slice :class:`FileStack` (locally), i.e. select local rows to read."""
         new = self.copy()
         sl = Slice(*args)
         new._slices = [sli.slice(sl) for sli in self.slices]
         return new
 
     def cslice(self, *args):
+        """Slice :class:`FileStack` (collectively), i.e. select global rows to read."""
         new = self.copy()
         global_slice = Slice(*args, size=self.csize)
         local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
@@ -193,6 +228,28 @@ class FileStack(BaseClass):
 
     @classmethod
     def concatenate(cls, *others):
+        """Concatenate :class:`FileStack` locally, e.g. the first rank will get the beginning of all files."""
+        new = cls(*utils.list_concatenate([other.files for other in others]))
+        if any(getattr(other, '_slices', None) is not None for other in others):
+            slices, cumsize = [], 0
+            for other in others:
+                slices += [sl.shift(cumsize) for sl in other.slices]
+                cumsize += other.cfilesize
+            new._slices = slices
+        return new
+
+    def append(self, other, **kwargs):
+        """(Locally) append ``other`` to current :class:`FileStack`."""
+        return self.concatenate(self, other, **kwargs)
+
+    def extend(self, other, **kwargs):
+        """(Locally) extend (in-place) current :class:`FileStack` with ``other``."""
+        new = self.append(self, other, **kwargs)
+        self.__dict__.update(new.__dict__)
+
+    @classmethod
+    def cconcatenate(cls, *others):
+        """Concatenate :class:`FileStack` collectively, such that global order is preserved."""
         new = cls(*utils.list_concatenate([other.files for other in others]))
         if any(getattr(other, '_slices', None) is not None for other in others):
             if any(other._is_slice_array for other in others):
@@ -203,7 +260,7 @@ class FileStack(BaseClass):
                     cumsizes = np.cumsum([sum(new.mpicomm.allgather(other.size)[:new.mpicomm.rank])] + [sl.size for sl in other.slices])
                     slices = [slice(size1, size2, 1) for size1, size2 in zip(cumsizes[:-1], cumsizes[1:])]
                     source.append(MPIScatteredSource(*slices))
-                source = MPIScatteredSource.concatenate(*source)
+                source = MPIScatteredSource.cconcatenate(*source)
                 new._slices = [Slice(source.get(utils.list_concatenate([[sl.to_array() for sl in other._slices] for other in others]), new_slice))]
             else:
                 slices, cumsize = [], 0
@@ -214,8 +271,13 @@ class FileStack(BaseClass):
                 new = new.cslice(0, cumsize, 1)  # to balance load
         return new
 
-    def extend(self, other, **kwargs):
-        new = self.concatenate(self, other, **kwargs)
+    def cappend(self, other, **kwargs):
+        """(Collectively) append ``other`` to current :class:`FileStack`."""
+        return self.cconcatenate(self, other, **kwargs)
+
+    def cextend(self, other, **kwargs):
+        """(Collectively) extend (in-place) current class:`FileStack` with ``other``."""
+        new = self.cappend(self, other, **kwargs)
         self.__dict__.update(new.__dict__)
 
     def read(self, column):
@@ -236,6 +298,7 @@ class FileStack(BaseClass):
         return tmp
 
     def write(self, data, mpiroot=None):
+        """Write data (numpy structured array or dict), optionally gathered on ``mpiroot``."""
         isdict = None
         if self.mpicomm.rank == mpiroot or mpiroot is None:
             isdict = isinstance(data, dict)
@@ -268,7 +331,22 @@ class FileStack(BaseClass):
 
 
 def get_filetype(filetype=None, filename=None):
+    """
+    Return :class:`BaseFile` type.
 
+    Parameters
+    ----------
+    filetype : string, type, default=None
+        File type name (e.g. "fits", "hdf5", "binary", "bigfile", "asdf") or :class:`BaseFile` type.
+        If ``None``, guess file type from ``filename``.
+
+    filename : string
+        File name; guess file type from its extension.
+
+    Returns
+    -------
+    filetype : :class:`BaseFile` type
+    """
     if filetype is None:
         if filename is not None:
             ext = os.path.splitext(filename)[1][1:]
@@ -284,6 +362,8 @@ def get_filetype(filetype=None, filename=None):
 
 class RegisteredFile(type(BaseClass)):
 
+    """Metaclass registering :class:`BaseFile`-derived classes."""
+
     _registry = {}
 
     def __new__(meta, name, bases, class_dict):
@@ -295,7 +375,7 @@ class RegisteredFile(type(BaseClass)):
 class BaseFile(BaseClass, metaclass=RegisteredFile):
     """
     Base class to read/write a file from/to disk.
-    File handlers should extend this class, by (at least) implementing :meth:`read`, :meth:`get` and :meth:`write`.
+    File handlers should extend this class, by (at least) implementing :meth:`_read_header_root`, :meth:`_read_rows` and :meth:`_write_data`.
     """
     name = 'base'
     extensions = []
@@ -320,6 +400,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         self.mpiroot = 0
 
     def __enter__(self):
+        """To use :class:`BaseFile` as a context manager."""
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
@@ -330,6 +411,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         return self.mpicomm.rank == self.mpiroot
 
     def _read_header(self):
+        # Read file header, the end user does not need to call it
         if self.is_mpi_root():
             self.log_info('Reading {}.'.format(self.filename))
             state = self._read_header_root()
@@ -342,24 +424,27 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
 
     @property
     def csize(self):
+        # File size
         if getattr(self, '_csize', None) is None:
             self._read_header()
         return self._csize
 
     @property
     def columns(self):
+        # File columns (list of column names)
         if getattr(self, '_columns', None) is None:
             self._read_header()
         return self._columns
 
     @property
     def header(self):
+        # File header (dict)
         if getattr(self, '_header', None) is None:
             self._read_header()
         return self._header
 
     def read(self, column, rows=slice(None)):
-        """Read column of name ``column``."""
+        """Read input ``rows`` of column name ``column``."""
         sl = Slice(rows, size=self.csize)
         rows = [sl.idx]
         if sl.is_array:
@@ -373,12 +458,15 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
 
     def write(self, data, header=None):
         """
-        Write input data to file(s).
+        Write input data to :attr:`filename`.
 
         Parameters
         ----------
         data : array, dict
             Data to write.
+
+        header : dict, default=None
+            Optional header.
         """
         if self.is_mpi_root():
             self.log_info('Writing {}.'.format(self.filename))
@@ -394,6 +482,11 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         self._write_data(data, header=header or {})
 
     def _read_header_root(self):
+        # Must return a dictionary with (at least)
+        # csize: file size
+        # columns: list of column names
+        # (optionally) header : dictionary
+        # (optionally) other attributes
         raise NotImplementedError
 
     def _read_rows(self, column, rows):
@@ -409,11 +502,15 @@ except ImportError: fitsio = None
 
 class FitsFile(BaseFile):
     """
-    Class to read/write a FITS file from/to disk.
+    Class to read/write a Fits file from/to disk.
+
+    Warning
+    -------
+    Writing a FITS file requires all data to be gathered on a single rank, which may cause out-of-memory errors.
 
     Note
     ----
-    In some circumstances (e.g. catalog has just been written), :meth:`get` fails with a file not found error.
+    In some circumstances (e.g. catalog has just been written), :meth:`read` fails with a file not found error.
     We have tried making sure processes read the file one after the other, but that does not solve the issue.
     A similar issue happens with nbodykit - though at a lower frequency.
     """
@@ -435,7 +532,7 @@ class FitsFile(BaseFile):
             FITS extension. Defaults to first extension with data.
 
         kwargs : dict
-            Arguments for :class:`BaseFile`.
+            Arguments for :class:`BaseFile` (mpicomm).
         """
         if fitsio is None:
             raise ImportError('Install fitsio')
@@ -486,6 +583,12 @@ class HDF5File(BaseFile):
     """
     Class to read/write a HDF5 file from/to disk.
 
+    Warning
+    -------
+    If hdf5 is not built with MPI support (see https://docs.h5py.org/en/stable/mpi.html)
+    writing a HDF5 file requires each column to be gathered on a single rank,
+    which may cause out-of-memory errors.
+
     Note
     ----
     In some circumstances (e.g. catalog has just been written), :meth:`get` fails with a file not found error.
@@ -510,7 +613,7 @@ class HDF5File(BaseFile):
             HDF5 group where columns are located.
 
         kwargs : dict
-            Arguments for :class:`BaseFile`.
+            Arguments for :class:`BaseFile` (mpicomm).
         """
         if h5py is None:
             raise ImportError('Install h5py')
@@ -585,7 +688,9 @@ from numpy.lib.format import open_memmap
 
 
 class BinaryFile(BaseFile):
+
     """Class to read/write a binary file from/to disk."""
+
     name = 'bin'
     extensions = ['npy']
     _type_read_rows = ['slice', 'index']
@@ -609,14 +714,15 @@ class BinaryFile(BaseFile):
         fp.flush()
 
 
-
 import json
 try: import bigfile
 except ImportError: bigfile = None
 
 
 class BigFile(BaseFile):
+
     """Class to read/write a BigFile from/to disk."""
+
     name = 'bigfile'
     extensions = ['bigfile']
     _type_read_rows = ['slice']
@@ -632,13 +738,17 @@ class BigFile(BaseFile):
             File name.
 
         group : string, default='/'
-            BigFile group where columns are located.
+            :class:`BigFile` group where columns are located.
 
-        header_blocks : string, list, default=None
-            Header blocks.
+        header : string, list, default=None
+            Name of headers.
+
+        exclude : string, list
+            List of datasets to exclude (when reading file size).
+            Can contain *regex* or Unix-style patterns.
 
         kwargs : dict
-            Arguments for :class:`BaseFile`.
+            Arguments for :class:`BaseFile` (mpicomm).
         """
         if bigfile is None:
             raise ImportError('Install bigfile')
@@ -667,7 +777,7 @@ class BigFile(BaseFile):
                 # By default exclude header only.
                 exclude = headers
 
-            columns = _select_columns(columns, exclude=exclude)
+            columns = select_columns(columns, exclude=exclude)
             csize = bigfile.Dataset(file[self.group], columns).size
 
             attrs = {}
@@ -693,8 +803,6 @@ class BigFile(BaseFile):
             return bigfile.Dataset(file, [column])[column][start:stop][::step]
 
     def _write_data(self, data, header):
-        # trim out any default columns; these do not need to be saved as
-        # they are automatically available to every Catalog
         columns = list(data.keys())
 
         # FIXME: merge this logic into bigfile
@@ -782,7 +890,13 @@ except ImportError: asdf = None
 
 
 class AsdfFile(BaseFile):
-    """Class to read/write an ASDF file from/to disk."""
+    """
+    Class to read/write an ASDF file from/to disk.
+
+    Warning
+    -------
+    Writing an ASDF file requires all data to be gathered on a single rank, which may cause out-of-memory errors.
+    """
     name = 'asdf'
     extensions = ['asdf']
     _type_read_rows = ['slice']
@@ -790,7 +904,7 @@ class AsdfFile(BaseFile):
 
     def __init__(self, filename, group='', header=None, exclude=None, **kwargs):
         """
-        Initialize :class:`ASDFFile`.
+        Initialize :class:`AsdfFile`.
 
         Parameters
         ----------
@@ -798,13 +912,17 @@ class AsdfFile(BaseFile):
             File name.
 
         group : string, default='/'
-            BigFile group where columns are located.
+            Asdf group where columns are located.
 
-        header_blocks : string, list, default=None
-            Header blocks.
+        header : string, list, default=None
+            Name of headers.
+
+        exclude : string, list
+            List of datasets to exclude (when reading file size).
+            Can contain *regex* or Unix-style patterns.
 
         kwargs : dict
-            Arguments for :class:`BaseFile`.
+            Arguments for :class:`BaseFile` (mpicomm).
         """
         if asdf is None:
             raise ImportError('Install asdf')
@@ -829,7 +947,7 @@ class AsdfFile(BaseFile):
                 exclude = headers
             exclude += ['asdf_library', 'history']
 
-            columns = _select_columns(columns, exclude=exclude)
+            columns = select_columns(columns, exclude=exclude)
             csize = len(file[columns[0]])
 
             attrs = {}
@@ -849,11 +967,9 @@ class AsdfFile(BaseFile):
     def _read_rows(self, column, rows):
         with asdf.open(self.filename) as file:
             file = file[self.group] if self.group else file
-            return np.array(file[column][rows], copy=True)  # otherwise, segfault
+            return np.array(file[column][rows], copy=True)  # otherwise, segfault due to memorymap
 
     def _write_data(self, data, header):
-        # trim out any default columns; these do not need to be saved as
-        # they are automatically available to every Catalog
         data = {key: mpi.gather_array(data[key], mpicomm=self.mpicomm, root=self.mpiroot) for key in data}
         if self.is_mpi_root():
             af = asdf.AsdfFile(data)
