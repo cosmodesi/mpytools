@@ -91,331 +91,6 @@ class CurrentMPIComm(object):
 
 
 @CurrentMPIComm.enable
-def gather_array(data, root=0, mpicomm=None):
-    """
-    Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/utils.py.
-    Gather the input data array from all ranks to the specified ``root``.
-    This uses ``Gatherv``, which avoids mpi4py pickling, and also
-    avoids the 2 GB mpi4py limit for bytes using a custom datatype.
-
-    Parameters
-    ----------
-    data : array_like
-        The data on each rank to gather.
-
-    root : int, Ellipsis, default=0
-        The rank number to gather the data to. If root is Ellipsis or None,
-        broadcast the result to all ranks.
-
-    mpicomm : MPI communicator, default=None
-        The MPI communicator.
-
-    Returns
-    -------
-    recvbuffer : array_like, None
-        The gathered data on root, and `None` otherwise.
-    """
-    if root is None: root = Ellipsis
-
-    if np.isscalar(data):
-        if root is Ellipsis:
-            return np.array(mpicomm.allgather(data))
-        gathered = mpicomm.gather(data, root=root)
-        if mpicomm.rank == root:
-            return np.array(gathered)
-        return None
-
-    if not isinstance(data, np.ndarray):
-        raise ValueError('"data" must be numpy array in gather_array')
-
-    # need C-contiguous order
-    if not data.flags['C_CONTIGUOUS']:
-        data = np.ascontiguousarray(data)
-    local_length = data.shape[0]
-
-    # check dtypes and shapes
-    shapes = mpicomm.allgather(data.shape)
-    dtypes = mpicomm.allgather(data.dtype)
-
-    # check for structured data
-    if dtypes[0].char == 'V':
-
-        # check for structured data mismatch
-        names = set(dtypes[0].names)
-        if any(set(dt.names) != names for dt in dtypes[1:]):
-            raise ValueError('mismatch between data type fields in structured data')
-
-        # check for 'O' data types
-        if any(dtypes[0][name] == 'O' for name in dtypes[0].names):
-            raise ValueError('object data types ("O") not allowed in structured data in gather_array')
-
-        # compute the new shape for each rank
-        newlength = mpicomm.allreduce(local_length)
-        newshape = list(data.shape)
-        newshape[0] = newlength
-
-        # the return array
-        if root is Ellipsis or mpicomm.rank == root:
-            recvbuffer = np.empty(newshape, dtype=dtypes[0], order='C')
-        else:
-            recvbuffer = None
-
-        for name in dtypes[0].names:
-            d = gather_array(data[name], root=root, mpicomm=mpicomm)
-            if root is Ellipsis or mpicomm.rank == root:
-                recvbuffer[name] = d
-
-        return recvbuffer
-
-    # check for 'O' data types
-    if dtypes[0] == 'O':
-        raise ValueError('object data types ("O") not allowed in structured data in gather_array')
-
-    # check for bad dtypes and bad shapes
-    if root is Ellipsis or mpicomm.rank == root:
-        bad_shape = any(s[1:] != shapes[0][1:] for s in shapes[1:])
-        bad_dtype = any(dt != dtypes[0] for dt in dtypes[1:])
-    else:
-        bad_shape, bad_dtype = None, None
-
-    if root is not Ellipsis:
-        bad_shape, bad_dtype = mpicomm.bcast((bad_shape, bad_dtype), root=root)
-
-    if bad_shape:
-        raise ValueError('mismatch between shape[1:] across ranks in gather_array')
-    if bad_dtype:
-        raise ValueError('mismatch between dtypes across ranks in gather_array')
-
-    shape = data.shape
-    dtype = data.dtype
-
-    # setup the custom dtype
-    duplicity = np.product(np.array(shape[1:], 'intp'))
-    itemsize = duplicity * dtype.itemsize
-    dt = MPI.BYTE.Create_contiguous(itemsize)
-    dt.Commit()
-
-    # compute the new shape for each rank
-    newlength = mpicomm.allreduce(local_length)
-    newshape = list(shape)
-    newshape[0] = newlength
-
-    # the return array
-    if root is Ellipsis or mpicomm.rank == root:
-        recvbuffer = np.empty(newshape, dtype=dtype, order='C')
-    else:
-        recvbuffer = None
-
-    # the recv counts
-    counts = mpicomm.allgather(local_length)
-    counts = np.array(counts, order='C')
-
-    # the recv offsets
-    offsets = np.zeros_like(counts, order='C')
-    offsets[1:] = counts.cumsum()[:-1]
-
-    # gather to root
-    if root is Ellipsis:
-        mpicomm.Allgatherv([data, dt], [recvbuffer, (counts, offsets), dt])
-    else:
-        mpicomm.Gatherv([data, dt], [recvbuffer, (counts, offsets), dt], root=root)
-
-    dt.Free()
-
-    return recvbuffer
-
-
-@CurrentMPIComm.enable
-def broadcast_array(data, root=0, mpicomm=None):
-    """
-    Broadcast the input data array across all ranks, assuming ``data`` is
-    initially only on `root` (and `None` on other ranks).
-    This uses ``Scatterv``, which avoids mpi4py pickling, and also
-    avoids the 2 GB mpi4py limit for bytes using a custom datatype.
-
-    Parameters
-    ----------
-    data : array_like or None
-        On `root`, this gives the data to broadcast.
-
-    root : int, default=0
-        The rank number that initially has the data.
-
-    mpicomm : MPI communicator, default=None
-        The MPI communicator.
-
-    Returns
-    -------
-    recvbuffer : array_like
-        The chunk of ``data`` that each rank gets.
-    """
-
-    # check for bad input
-    if mpicomm.rank == root:
-        isscalar = np.isscalar(data)
-    else:
-        isscalar = None
-    isscalar = mpicomm.bcast(isscalar, root=root)
-
-    if isscalar:
-        return mpicomm.bcast(data, root=root)
-
-    if mpicomm.rank == root:
-        bad_input = not isinstance(data, np.ndarray)
-    else:
-        bad_input = None
-    bad_input = mpicomm.bcast(bad_input, root=root)
-    if bad_input:
-        raise ValueError('`data` must by numpy array on root in broadcast_array')
-
-    if mpicomm.rank == root:
-        # need C-contiguous order
-        if not data.flags['C_CONTIGUOUS']:
-            data = np.ascontiguousarray(data)
-        shape_and_dtype = (data.shape, data.dtype)
-    else:
-        shape_and_dtype = None
-
-    # each rank needs shape/dtype of input data
-    shape, dtype = mpicomm.bcast(shape_and_dtype, root=root)
-
-    # object dtype is not supported
-    fail = False
-    if dtype.char == 'V':
-        fail = any(dtype[name] == 'O' for name in dtype.names)
-    else:
-        fail = dtype == 'O'
-    if fail:
-        raise ValueError('"object" data type not supported in broadcast_array; please specify specific data type')
-
-    # initialize empty data on non-root ranks
-    if mpicomm.rank != root:
-        np_dtype = np.dtype((dtype, shape))
-        data = np.empty(0, dtype=np_dtype)
-
-    # setup the custom dtype
-    duplicity = np.product(np.array(shape, 'intp'))
-    itemsize = duplicity * dtype.itemsize
-    dt = MPI.BYTE.Create_contiguous(itemsize)
-    dt.Commit()
-
-    # the return array
-    recvbuffer = np.empty(shape, dtype=dtype, order='C')
-
-    # the send offsets
-    counts = np.ones(mpicomm.size, dtype='i', order='C')
-    offsets = np.zeros_like(counts, order='C')
-
-    # do the scatter
-    mpicomm.Barrier()
-    mpicomm.Scatterv([data, (counts, offsets), dt], [recvbuffer, dt], root=root)
-    dt.Free()
-    return recvbuffer
-
-
-@CurrentMPIComm.enable
-def scatter_array(data, counts=None, root=0, mpicomm=None):
-    """
-    Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/utils.py
-    Scatter the input data array across all ranks, assuming ``data`` is
-    initially only on `root` (and `None` on other ranks).
-    This uses ``Scatterv``, which avoids mpi4py pickling, and also
-    avoids the 2 GB mpi4py limit for bytes using a custom datatype
-
-    Parameters
-    ----------
-    data : array_like or None
-        On `root`, this gives the data to split and scatter.
-
-    counts : list of int
-        List of the lengths of data to send to each rank.
-
-    root : int, default=0
-        The rank number that initially has the data.
-
-    mpicomm : MPI communicator, default=None
-        The MPI communicator.
-
-    Returns
-    -------
-    recvbuffer : array_like
-        The chunk of ``data`` that each rank gets.
-    """
-    if counts is not None:
-        counts = np.asarray(counts, order='C')
-        if len(counts) != mpicomm.size:
-            raise ValueError('counts array has wrong length!')
-
-    # check for bad input
-    if mpicomm.rank == root:
-        bad_input = not isinstance(data, np.ndarray)
-    else:
-        bad_input = None
-    bad_input = mpicomm.bcast(bad_input, root=root)
-    if bad_input:
-        raise ValueError('`data` must by numpy array on root in scatter_array')
-
-    if mpicomm.rank == root:
-        # need C-contiguous order
-        if not data.flags['C_CONTIGUOUS']:
-            data = np.ascontiguousarray(data)
-        shape_and_dtype = (data.shape, data.dtype)
-    else:
-        shape_and_dtype = None
-
-    # each rank needs shape/dtype of input data
-    shape, dtype = mpicomm.bcast(shape_and_dtype, root=root)
-
-    # object dtype is not supported
-    fail = False
-    if dtype.char == 'V':
-        fail = any(dtype[name] == 'O' for name in dtype.names)
-    else:
-        fail = dtype == 'O'
-    if fail:
-        raise ValueError('"object" data type not supported in scatter_array; please specify specific data type')
-
-    # initialize empty data on non-root ranks
-    if mpicomm.rank != root:
-        np_dtype = np.dtype((dtype, shape[1:]))
-        data = np.empty(0, dtype=np_dtype)
-
-    # setup the custom dtype
-    duplicity = np.product(np.array(shape[1:], 'intp'))
-    itemsize = duplicity * dtype.itemsize
-    dt = MPI.BYTE.Create_contiguous(itemsize)
-    dt.Commit()
-
-    # compute the new shape for each rank
-    newshape = list(shape)
-
-    if counts is None:
-        newshape[0] = newlength = local_size(shape[0], mpicomm=mpicomm)
-    else:
-        if counts.sum() != shape[0]:
-            raise ValueError('the sum of the `counts` array needs to be equal to data length')
-        newshape[0] = counts[mpicomm.rank]
-
-    # the return array
-    recvbuffer = np.empty(newshape, dtype=dtype, order='C')
-
-    # the send counts, if not provided
-    if counts is None:
-        counts = mpicomm.allgather(newlength)
-        counts = np.array(counts, order='C')
-
-    # the send offsets
-    offsets = np.zeros_like(counts, order='C')
-    offsets[1:] = counts.cumsum()[:-1]
-
-    # do the scatter
-    mpicomm.Barrier()
-    mpicomm.Scatterv([data, (counts, offsets), dt], [recvbuffer, dt], root=root)
-    dt.Free()
-    return recvbuffer
-
-
-@CurrentMPIComm.enable
 def set_common_seed(seed=None, mpicomm=None):
     """
     Set same global :mod:`np.random` and :mod:`random` seed for all MPI processes.
@@ -645,6 +320,377 @@ class MPIRandomState(object):
 
 
 @CurrentMPIComm.enable
+def reduce_array(data, op='sum', root=0, mpicomm=None):
+    """
+    Reduce the input data array from all ranks to the specified ``root``.
+
+    Parameters
+    ----------
+    data : array_like
+        The data on each rank to gather.
+
+    op : string, MPI.Op
+        MPI operation, or 'sum', 'prod', 'min', 'max'.
+
+    root : int, Ellipsis, default=0
+        The rank number to reduce the data to. If root is Ellipsis or None,
+        broadcast the result to all ranks.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
+
+    Returns
+    -------
+    recvbuffer : array_like, None
+        The reduced data on root, and `None` otherwise.
+    """
+    if root is None: root = Ellipsis
+
+    if isinstance(op, str):
+        op = {'sum': MPI.SUM, 'prod': MPI.PROD, 'min': MPI.MIN, 'max': MPI.MAX}[op]
+
+    if np.isscalar(data):
+        if root is Ellipsis:
+            return mpicomm.allreduce(data, op=op)
+        return mpicomm.reduce(data, op=op, root=root)
+
+    data = np.asarray(data)
+    isstruct = data.dtype.names is not None
+    if isstruct:
+        toret = None
+        if root is Ellipsis or mpicomm.rank == root:
+            toret = np.empty_like(data)
+        for name in data.dtype.names:
+            tmp = reduce_array(data[name], op=op, root=root, mpicomm=mpicomm)
+            if root is Ellipsis or mpicomm.rank == root:
+                toret[name] = tmp
+        return toret
+
+    data = np.ascontiguousarray(data)
+    dtype = data.dtype
+
+    if np.issubdtype(dtype, np.floating):
+        # Otherwise, weird error   File "mpi4py/MPI/commimpl.pxi", line 142, in mpi4py.MPI.PyMPI_Lock KeyError: '<d'
+        data = data.astype('f{:d}'.format(data.dtype.itemsize))
+
+    if root is Ellipsis:
+        total = np.empty_like(data)
+        mpicomm.Allreduce(data, total, op=op)
+        total = total.astype(dtype)
+    else:
+        total = None
+        if mpicomm.rank == root:
+            total = np.empty_like(data)
+        mpicomm.Reduce(data, total, op=op, root=root)
+        if mpicomm.rank == root:
+            total = total.astype(dtype)
+    return total
+
+
+@CurrentMPIComm.enable
+def gather_array(data, root=0, mpicomm=None):
+    """
+    Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/utils.py.
+    Gather the input data array from all ranks to the specified ``root``.
+    This uses ``Gatherv``, which avoids mpi4py pickling, and also
+    avoids the 2 GB mpi4py limit for bytes using a custom datatype.
+
+    Parameters
+    ----------
+    data : array_like
+        The data on each rank to gather.
+
+    root : int, Ellipsis, default=0
+        The rank number to gather the data to. If root is Ellipsis or None,
+        broadcast the result to all ranks.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
+
+    Returns
+    -------
+    recvbuffer : array_like, None
+        The gathered data on root, and `None` otherwise.
+    """
+    if root is None: root = Ellipsis
+
+    if np.isscalar(data):
+        if root is Ellipsis:
+            return np.array(mpicomm.allgather(data))
+        gathered = mpicomm.gather(data, root=root)
+        if mpicomm.rank == root:
+            return np.array(gathered)
+        return None
+
+    # Need C-contiguous order
+    data = np.ascontiguousarray(data)
+
+    local_length = data.shape[0]
+
+    # check dtypes and shapes
+    shapes = mpicomm.allgather(data.shape)
+    dtypes = mpicomm.allgather(data.dtype)
+
+    # check for structured data
+    if dtypes[0].char == 'V':
+
+        # check for structured data mismatch
+        names = set(dtypes[0].names)
+        if any(set(dt.names) != names for dt in dtypes[1:]):
+            raise ValueError('mismatch between data type fields in structured data')
+
+        # check for 'O' data types
+        if any(dtypes[0][name] == 'O' for name in dtypes[0].names):
+            raise ValueError('object data types ("O") not allowed in structured data in gather_array')
+
+        # compute the new shape for each rank
+        newlength = mpicomm.allreduce(local_length)
+        newshape = list(data.shape)
+        newshape[0] = newlength
+
+        # the return array
+        if root is Ellipsis or mpicomm.rank == root:
+            recvbuffer = np.empty(newshape, dtype=dtypes[0], order='C')
+        else:
+            recvbuffer = None
+
+        for name in dtypes[0].names:
+            d = gather_array(data[name], root=root, mpicomm=mpicomm)
+            if root is Ellipsis or mpicomm.rank == root:
+                recvbuffer[name] = d
+
+        return recvbuffer
+
+    # check for 'O' data types
+    if dtypes[0] == 'O':
+        raise ValueError('object data types ("O") not allowed in structured data in gather_array')
+
+    # check for bad dtypes and bad shapes
+    if root is Ellipsis or mpicomm.rank == root:
+        bad_shape = any(s[1:] != shapes[0][1:] for s in shapes[1:])
+        bad_dtype = any(dt != dtypes[0] for dt in dtypes[1:])
+    else:
+        bad_shape, bad_dtype = None, None
+
+    if root is not Ellipsis:
+        bad_shape, bad_dtype = mpicomm.bcast((bad_shape, bad_dtype), root=root)
+
+    if bad_shape:
+        raise ValueError('mismatch between shape[1:] across ranks in gather_array')
+    if bad_dtype:
+        raise ValueError('mismatch between dtypes across ranks in gather_array')
+
+    shape = data.shape
+    dtype = data.dtype
+
+    # setup the custom dtype
+    duplicity = np.prod(shape[1:], dtype='intp')
+    itemsize = duplicity * dtype.itemsize
+    dt = MPI.BYTE.Create_contiguous(itemsize)
+    dt.Commit()
+
+    # compute the new shape for each rank
+    newlength = mpicomm.allreduce(local_length)
+    newshape = list(shape)
+    newshape[0] = newlength
+
+    # the return array
+    if root is Ellipsis or mpicomm.rank == root:
+        recvbuffer = np.empty(newshape, dtype=dtype, order='C')
+    else:
+        recvbuffer = None
+
+    # the recv counts
+    counts = mpicomm.allgather(local_length)
+    counts = np.array(counts, order='C')
+
+    # the recv offsets
+    offsets = np.zeros_like(counts, order='C')
+    offsets[1:] = counts.cumsum()[:-1]
+
+    # gather to root
+    if root is Ellipsis:
+        mpicomm.Allgatherv([data, dt], [recvbuffer, (counts, offsets), dt])
+    else:
+        mpicomm.Gatherv([data, dt], [recvbuffer, (counts, offsets), dt], root=root)
+
+    dt.Free()
+
+    return recvbuffer
+
+
+@CurrentMPIComm.enable
+def broadcast_array(data, root=0, mpicomm=None):
+    """
+    Broadcast the input data array across all ranks, assuming ``data`` is
+    initially only on `root` (and `None` on other ranks).
+    This uses ``Scatterv``, which avoids mpi4py pickling, and also
+    avoids the 2 GB mpi4py limit for bytes using a custom datatype.
+
+    Parameters
+    ----------
+    data : array_like or None
+        On `root`, this gives the data to broadcast.
+
+    root : int, default=0
+        The rank number that initially has the data.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
+
+    Returns
+    -------
+    recvbuffer : array_like
+        The chunk of ``data`` that each rank gets.
+    """
+
+    # check for bad input
+    if mpicomm.rank == root:
+        isscalar = np.isscalar(data)
+    else:
+        isscalar = None
+    isscalar = mpicomm.bcast(isscalar, root=root)
+
+    if isscalar:
+        return mpicomm.bcast(data, root=root)
+
+    if mpicomm.rank == root:
+        # Need C-contiguous order
+        data = np.ascontiguousarray(data)
+        shape_and_dtype = (data.shape, data.dtype)
+    else:
+        shape_and_dtype = None
+
+    # each rank needs shape/dtype of input data
+    shape, dtype = mpicomm.bcast(shape_and_dtype, root=root)
+
+    # object dtype is not supported
+    fail = False
+    if dtype.char == 'V':
+        fail = any(dtype[name] == 'O' for name in dtype.names)
+    else:
+        fail = dtype == 'O'
+    if fail:
+        raise ValueError('"object" data type not supported in broadcast_array; please specify specific data type')
+
+    # initialize empty data on non-root ranks
+    if mpicomm.rank != root:
+        np_dtype = np.dtype((dtype, shape))
+        data = np.empty(0, dtype=np_dtype)
+
+    # setup the custom dtype
+    duplicity = np.prod(shape, dtype='intp')
+    itemsize = duplicity * dtype.itemsize
+    dt = MPI.BYTE.Create_contiguous(itemsize)
+    dt.Commit()
+
+    # the return array
+    recvbuffer = np.empty(shape, dtype=dtype, order='C')
+
+    # the send offsets
+    counts = np.ones(mpicomm.size, dtype='i', order='C')
+    offsets = np.zeros_like(counts, order='C')
+
+    # do the scatter
+    mpicomm.Barrier()
+    mpicomm.Scatterv([data, (counts, offsets), dt], [recvbuffer, dt], root=root)
+    dt.Free()
+    return recvbuffer
+
+
+@CurrentMPIComm.enable
+def scatter_array(data, counts=None, root=0, mpicomm=None):
+    """
+    Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/utils.py
+    Scatter the input data array across all ranks, assuming ``data`` is
+    initially only on `root` (and `None` on other ranks).
+    This uses ``Scatterv``, which avoids mpi4py pickling, and also
+    avoids the 2 GB mpi4py limit for bytes using a custom datatype
+
+    Parameters
+    ----------
+    data : array_like or None
+        On `root`, this gives the data to split and scatter.
+
+    counts : list of int
+        List of the lengths of data to send to each rank.
+
+    root : int, default=0
+        The rank number that initially has the data.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
+
+    Returns
+    -------
+    recvbuffer : array_like
+        The chunk of ``data`` that each rank gets.
+    """
+    if counts is not None:
+        counts = np.asarray(counts, order='C')
+        if len(counts) != mpicomm.size:
+            raise ValueError('counts array has wrong length!')
+
+    if mpicomm.rank == root:
+        # Need C-contiguous order
+        data = np.ascontiguousarray(data)
+        shape_and_dtype = (data.shape, data.dtype)
+    else:
+        shape_and_dtype = None
+
+    # each rank needs shape/dtype of input data
+    shape, dtype = mpicomm.bcast(shape_and_dtype, root=root)
+
+    # object dtype is not supported
+    fail = False
+    if dtype.char == 'V':
+        fail = any(dtype[name] == 'O' for name in dtype.names)
+    else:
+        fail = dtype == 'O'
+    if fail:
+        raise ValueError('"object" data type not supported in scatter_array; please specify specific data type')
+
+    # initialize empty data on non-root ranks
+    if mpicomm.rank != root:
+        np_dtype = np.dtype((dtype, shape[1:]))
+        data = np.empty(0, dtype=np_dtype)
+
+    # setup the custom dtype
+    duplicity = np.prod(shape[1:], dtype='intp')
+    itemsize = duplicity * dtype.itemsize
+    dt = MPI.BYTE.Create_contiguous(itemsize)
+    dt.Commit()
+
+    # compute the new shape for each rank
+    newshape = list(shape)
+
+    if counts is None:
+        newshape[0] = newlength = local_size(shape[0], mpicomm=mpicomm)
+    else:
+        if counts.sum() != shape[0]:
+            raise ValueError('the sum of the `counts` array needs to be equal to data length')
+        newshape[0] = counts[mpicomm.rank]
+
+    # the return array
+    recvbuffer = np.empty(newshape, dtype=dtype, order='C')
+
+    # the send counts, if not provided
+    if counts is None:
+        counts = mpicomm.allgather(newlength)
+        counts = np.array(counts, order='C')
+
+    # the send offsets
+    offsets = np.zeros_like(counts, order='C')
+    offsets[1:] = counts.cumsum()[:-1]
+
+    # do the scatter
+    mpicomm.Barrier()
+    mpicomm.Scatterv([data, (counts, offsets), dt], [recvbuffer, dt], root=root)
+    dt.Free()
+    return recvbuffer
+
+
+@CurrentMPIComm.enable
 def send_array(data, dest, tag=0, blocking=True, mpicomm=None):
     """
     Send input array ``data`` to process ``dest``.
@@ -666,10 +712,7 @@ def send_array(data, dest, tag=0, blocking=True, mpicomm=None):
     mpicomm : MPI communicator, default=None
         Communicator. Defaults to current communicator.
     """
-    if not isinstance(data, np.ndarray):
-        raise ValueError('"data" must be numpy array in send_array')
-    if not data.flags['C_CONTIGUOUS']:
-        data = np.ascontiguousarray(data)
+    data = np.ascontiguousarray(data)
     shape, dtype = data.shape, data.dtype
 
     fail = False
@@ -680,7 +723,7 @@ def send_array(data, dest, tag=0, blocking=True, mpicomm=None):
     if fail:
         raise ValueError('"object" data type not supported in send_array; please specify specific data type')
 
-    duplicity = np.product(np.array(shape[1:], 'intp'))
+    duplicity = np.prod(shape[1:], dtype='intp')
     itemsize = duplicity * dtype.itemsize
     dt = MPI.BYTE.Create_contiguous(itemsize)
     dt.Commit()
@@ -714,7 +757,7 @@ def recv_array(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
     shape, dtype = mpicomm.recv(source=source, tag=tag)
     data = np.zeros(shape, dtype=dtype)
 
-    duplicity = np.product(np.array(shape[1:], 'intp'))
+    duplicity = np.prod(shape[1:], dtype='intp')
     itemsize = duplicity * dtype.itemsize
     dt = MPI.BYTE.Create_contiguous(itemsize)
     dt.Commit()
@@ -749,7 +792,7 @@ def local_size(size, mpicomm=None):
     return localsize
 
 
-def _reduce_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
+def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
     """
     Apply operation ``npop`` on input array ``data`` and reduce the result
     with MPI operation ``mpiop``(e.g. sum).
@@ -785,14 +828,7 @@ def _reduce_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
     if axis is None: axis = tuple(range(data.ndim))
     else: axis = normalize_axis_tuple(axis, data.ndim)
     if 0 in axis:
-        if np.ndim(toret) == 0:
-            return mpicomm.allreduce(toret, op=mpiop)
-        if np.issubdtype(toret.dtype, np.floating):
-            # Otherwise, weird error   File "mpi4py/MPI/commimpl.pxi", line 142, in mpi4py.MPI.PyMPI_Lock KeyError: '<d'
-            toret = toret.astype('f{:d}'.format(toret.dtype.itemsize))
-        total = np.empty_like(toret)
-        mpicomm.Allreduce(toret, total, op=mpiop)
-        return total.astype(data.dtype)
+        return reduce_array(toret, mpicomm=mpicomm, op=mpiop, root=Ellipsis)
     return toret
 
 
@@ -813,7 +849,7 @@ def shape_array(data, mpicomm=None):
 @CurrentMPIComm.enable
 def sum_array(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return sum of input array ``data`` along ``axis``."""
-    return _reduce_array(data, np.sum, MPI.SUM, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_op_array(data, np.sum, MPI.SUM, *args, mpicomm=mpicomm, axis=axis, **kwargs)
 
 
 @CurrentMPIComm.enable
@@ -834,26 +870,26 @@ def mean_array(data, *args, mpicomm=None, axis=-1, **kwargs):
 @CurrentMPIComm.enable
 def prod_array(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return product of input array ``data`` along ``axis``."""
-    return _reduce_array(data, np.prod, MPI.PROD, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_op_array(data, np.prod, MPI.PROD, *args, mpicomm=mpicomm, axis=axis, **kwargs)
 
 
 @CurrentMPIComm.enable
 def min_array(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return minimum of input array ``data`` along ``axis``."""
-    return _reduce_array(data, np.min, MPI.MIN, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_op_array(data, np.min, MPI.MIN, *args, mpicomm=mpicomm, axis=axis, **kwargs)
 
 
 @CurrentMPIComm.enable
 def max_array(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return maximum of input array ``data`` along ``axis``."""
-    return _reduce_array(data, np.max, MPI.MAX, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_op_array(data, np.max, MPI.MAX, *args, mpicomm=mpicomm, axis=axis, **kwargs)
 
 
 def _reduce_arg_array(data, npop, mpiargop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
     """
     Apply operation ``npop`` on input array ``data`` and reduce the result
     with MPI operation ``mpiargop``.
-    Contrary to :func:`_reduce_array`, ``npop`` is expected to return index in array.
+    Contrary to :func:`_reduce_op_array`, ``npop`` is expected to return index in array.
     (e.g. index of minimum).
 
     Parameters
@@ -974,11 +1010,12 @@ def sort_array(data, axis=-1, kind=None, mpicomm=None):
     if axis != 0:
         return toret
 
+    counts = mpicomm.allgather(len(toret))
     gathered = gather_array(toret, root=0, mpicomm=mpicomm)
     toret = None
     if mpicomm.rank == 0:
         toret = np.sort(gathered, axis=axis, kind=kind)
-    return scatter_array(toret, root=0, mpicomm=mpicomm)
+    return scatter_array(toret, root=0, counts=counts, mpicomm=mpicomm)
 
 
 @CurrentMPIComm.enable

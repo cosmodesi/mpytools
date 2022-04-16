@@ -7,7 +7,7 @@ import numpy as np
 
 from . import mpi, utils
 from .mpi import CurrentMPIComm
-from .utils import BaseClass, is_sequence
+from .utils import BaseClass
 from .array import Slice, MPIScatteredSource, MPIScatteredArray
 from .io import FileStack, select_columns
 
@@ -173,7 +173,7 @@ class BaseCatalog(BaseClass):
             if self.has_source is not None:
                 return self._source.size
             return 0
-        return len(self[keys[0]])
+        return len(self.get(keys[0], return_type=None))
 
     @property
     def size(self):
@@ -230,39 +230,36 @@ class BaseCatalog(BaseClass):
         return cumsize + np.arange(len(self))
 
     @cast_array_wrapper
-    def empty(self, itemshape=(), dtype='f8'):
+    def empty(self, itemshape=(), **kwargs):
         """Empty array of size :attr:`size`."""
-        return np.empty(_get_shape(len(self), itemshape), dtype=dtype)
+        return np.empty(_get_shape(len(self), itemshape), **kwargs)
 
     @cast_array_wrapper
-    def zeros(self, itemshape=(), dtype='f8'):
+    def zeros(self, itemshape=(), **kwargs):
         """Array of size :attr:`size` filled with zero."""
-        return np.zeros(_get_shape(len(self), itemshape), dtype=dtype)
+        return np.zeros(_get_shape(len(self), itemshape), **kwargs)
 
     @cast_array_wrapper
-    def ones(self, itemshape=(), dtype='f8'):
+    def ones(self, itemshape=(), **kwargs):
         """Array of size :attr:`size` filled with one."""
-        return np.ones(_get_shape(len(self), itemshape), dtype=dtype)
+        return np.ones(_get_shape(len(self), itemshape), **kwargs)
 
     @cast_array_wrapper
-    def full(self, fill_value, itemshape=(), dtype='f8'):
+    def full(self, fill_value, itemshape=(), **kwargs):
         """Array of size :attr:`size` filled with ``fill_value``."""
-        return np.full(_get_shape(len(self), itemshape), fill_value, dtype=dtype)
+        return np.full(_get_shape(len(self), itemshape), fill_value, **kwargs)
 
-    @cast_array_wrapper
     def falses(self, itemshape=()):
         """Array of size :attr:`size` filled with ``False``."""
-        return self.zeros(itemshape=itemshape, dtype=np.bool_)
+        return self.zeros(itemshape=itemshape, dtype='?')
 
-    @cast_array_wrapper
     def trues(self, itemshape=()):
         """Array of size :attr:`size` filled with ``True``."""
-        return self.ones(itemshape=itemshape, dtype=np.bool_)
+        return self.ones(itemshape=itemshape, dtype='?')
 
-    @cast_array_wrapper
-    def nans(self, itemshape=()):
+    def nans(self, itemshape=(), **kwargs):
         """Array of size :attr:`size` filled with :attr:`np.nan`."""
-        return self.ones(itemshape=itemshape) * np.nan
+        return self.ones(itemshape=itemshape, **kwargs) * np.nan
 
     @property
     def has_source(self):
@@ -306,7 +303,7 @@ class BaseCatalog(BaseClass):
         If ``mpiroot`` is ``None`` or ``Ellipsis`` result is broadcast on all processes.
         """
         if mpiroot is None: mpiroot = Ellipsis
-        return self.get(column, return_type='scattered').gathered(mpiroot=mpiroot)
+        return self.get(column, return_type='scattered').mpi_gather(mpiroot=mpiroot)
 
     def slice(self, *args):
         """
@@ -361,7 +358,7 @@ class BaseCatalog(BaseClass):
         """
         if not others:
             raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
-        if len(others) == 1 and is_sequence(others[0]):
+        if len(others) == 1 and utils.is_sequence(others[0]):
             others = others[0]
         attrs = {}
         for other in others: attrs.update(other.attrs)
@@ -420,7 +417,7 @@ class BaseCatalog(BaseClass):
         """
         if not others:
             raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
-        if len(others) == 1 and is_sequence(others[0]):
+        if len(others) == 1 and utils.is_sequence(others[0]):
             others = others[0]
         attrs = {}
         for other in others: attrs.update(other.attrs)

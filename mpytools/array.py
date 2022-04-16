@@ -5,11 +5,10 @@ import math
 
 import numpy as np
 from numpy.core.numeric import normalize_axis_tuple
-from numpy.lib.mixins import NDArrayOperatorsMixin as NDArrayLike
 
 from . import mpi, utils
 from .mpi import MPI, CurrentMPIComm
-from .utils import BaseClass, BaseMetaClass, is_sequence
+from .utils import BaseClass, is_sequence
 
 
 class Slice(BaseClass):
@@ -469,17 +468,13 @@ class MPIScatteredSource(BaseClass):
         self.__dict__.update(new.__dict__)
 
 
-class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
-
+class MPIScatteredArray(np.ndarray):
     """
     A class representing a numpy array scattered on several processes.
     It can be used transparently with any numpy function (in which case computation is local).
     """
-
-    _HANDLED_TYPES = (np.ndarray, numbers.Number)
-
     @CurrentMPIComm.enable
-    def __init__(self, value=None, copy=False, dtype=None, mpiroot=None, mpicomm=None):
+    def __new__(cls, value, copy=False, dtype=None, mpiroot=None, mpicomm=None):
         """
         Initalize :class:`MPIScatteredArray`.
 
@@ -501,134 +496,96 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
         """
-        self.mpicomm = mpicomm
-        if mpiroot is None or self.mpicomm.rank == mpiroot:
-            value = np.array(value, copy=copy, dtype=dtype, order='C')
+        if mpiroot is None or mpicomm.rank == mpiroot:
+            value = np.array(value, copy=copy, dtype=dtype)
         if mpiroot is not None:
             value = mpi.scatter_array(value, mpicomm=mpicomm, root=mpiroot)
-        self.value = value
+        obj = value.view(cls)
+        obj.mpicomm = mpicomm
+        return obj
+
+    def __array_finalize__(self, obj):
+        self.mpicomm = getattr(obj, 'mpicomm', None)
 
     @classmethod
     def falses(cls, *args, **kwargs):
         """Return array full of ``False``."""
-        return cls.zeros(*args, **kwargs, dtype=np.bool_)
+        return cls.zeros(*args, **kwargs, dtype='?')
 
     @classmethod
     def trues(cls, *args, **kwargs):
         """Return array full of ``True``."""
-        return cls.ones(*args, **kwargs, dtype=np.bool_)
+        return cls.ones(*args, **kwargs, dtype='?')
 
     @classmethod
     def nans(cls, *args, **kwargs):
         """Return array full of ``NaN``."""
         return cls.ones(*args, **kwargs) * np.nan
 
-    def __mul__(self, other):
-        # Multiply array
-        r = self.copy()
-        r.value = r.value * other
-        return r
+    def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
+        args = []
+        for i, input_ in enumerate(inputs):
+            if isinstance(input_, MPIScatteredArray):
+                args.append(input_.view(np.ndarray))
+            else:
+                args.append(input_)
 
-    def __imul__(self, other):
-        self.value *= other
-        return self
-
-    def __div__(self, other):
-        # Divide array
-        r = self.copy()
-        r.value = r.value / other
-        return r
-
-    __truediv__ = __div__
-
-    def __rdiv__(self, other):
-        r = self.copy()
-        r.value = other / r.value
-        return r
-
-    __rtruediv__ = __rdiv__
-
-    def __idiv__(self, other):
-        self.value /= other
-        return self
-
-    __itruediv__ = __idiv__
-
-    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        # Taken from https://numpy.org/doc/stable/reference/generated/numpy.lib.mixins.NDArrayOperatorsMixin.html
-        # See also https://github.com/rainwoodman/pmesh/blob/master/pmesh/pm.py
-        out = kwargs.get('out', ())
-        for x in inputs + out:
-            # Only support operations with instances of _HANDLED_TYPES.
-            # Use BaseMesh instead of type(self) for isinstance to
-            # allow subclasses that don't override __array_ufunc__ to
-            # handle BaseMesh objects.
-            if not isinstance(x, self._HANDLED_TYPES + (MPIScatteredArray,)):
-                return NotImplemented
-
-        # Defer to the implementation of the ufunc on unwrapped values.
-        inputs = tuple(x.value if isinstance(x, MPIScatteredArray) else x for x in inputs)
-        if out:
-            kwargs['out'] = tuple(x.value if isinstance(x, MPIScatteredArray) else x for x in out)
-        result = getattr(ufunc, method)(*inputs, **kwargs)
-
-        def cast(result):
-            # really only cast when we are using simple +-* **, etc.
-            if result.ndim == 0:
-                return result
-            new = self.copy()
-            new.value = result
-            return new
-
-        if type(result) is tuple:
-            # multiple return values
-            return tuple(cast(x) for x in result)
-        elif method == 'at':
-            # no return value
-            return None
+        outputs = out
+        if outputs:
+            out_args = []
+            for j, output in enumerate(outputs):
+                if isinstance(output, MPIScatteredArray):
+                    out_args.append(output.view(np.ndarray))
+                else:
+                    out_args.append(output)
+            kwargs['out'] = tuple(out_args)
         else:
-            # one return value
-            return cast(result)
+            outputs = (None,) * ufunc.nout
 
-    def __getitem__(self, index):
-        toret = self.value.__getitem__(index)
-        if toret.ndim == 0:  # scalar
-            return toret
-        return self.__class__(toret, mpicomm=self.mpicomm)
+        results = super().__array_ufunc__(ufunc, method, *args, **kwargs)
+        if results is NotImplemented:
+            return NotImplemented
 
-    def __setitem__(self, index, value):
-        return self.value.__setitem__(index, value)
+        if method == 'at':
+            if isinstance(inputs[0], MPIScatteredArray):
+                inputs[0].mpicomm = self.mpicomm
+            return
 
-    def __array__(self, dtype=None):
-        return self.value.astype(dtype, copy=False)
+        if ufunc.nout == 1:
+            results = (results,)
+
+        results = tuple((np.asarray(result).view(MPIScatteredArray)
+                         if output is None else output)
+                        for result, output in zip(results, outputs))
+
+        for result in results:
+            if isinstance(result, MPIScatteredArray):
+                result.mpicomm = self.mpicomm
+
+        return results[0] if len(results) == 1 else results
 
     def __repr__(self):
-        return '{}({})'.format(self.__class__.__name__, self.value)
-
-    def __str__(self):
-        return str(self.value)
+        return '{}({})'.format(self.__class__.__name__, self)
 
     @property
     def csize(self):
         """Collective array size."""
-        return self.mpicomm.allreduce(self.value.size)
+        return self.mpicomm.allreduce(self.size)
 
     @property
     def cshape(self):
         """Collective array shape."""
-        return (self.mpicomm.allreduce(self.value.shape[0]),) + self.value.shape[1:]
+        return (self.mpicomm.allreduce(self.shape[0]),) + self.shape[1:]
 
-    def __len__(self):
-        return len(self.value)
-
-    @cshape.setter
-    def cshape(self, cshape):
+    def creshape(self, *cshape):
         """
         Set collective shape attr:`cshape`, e.g.:
-        >>> array.cshape = (100, 2)
+        >>> array.creshape(100, 2)
 
         This will induce data exchange between various processes if local size cannot be divided by ``prod(cshape[1:])``.
         """
+        if len(cshape) == 0:
+            cshape = cshape[0]
         if np.ndim(cshape) == 0:
             cshape = (cshape,)
         cshape = tuple(cshape)
@@ -636,27 +593,20 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         if sum(unknown) > 1:
             raise ValueError('can only specify one unknown dimension')
         if sum(unknown) == 1:
-            size = self.csize // np.prod([s for s in cshape if s >= 0], dtype='i')
+            size = self.csize // np.prod([s for s in cshape if s >= 0], dtype='intp')
             cshape = tuple(s if s >= 0 else size for s in cshape)
-        csize = np.prod(cshape, dtype='i')
+        csize = np.prod(cshape, dtype='intp')
         if csize != self.csize:
             raise ValueError('cannot reshape array of size {:d} into shape {}'.format(self.csize, cshape))
-        itemsize = np.prod(cshape[1:], dtype='i')
+        itemsize = np.prod(cshape[1:], dtype='intp')
         local_slice = Slice(self.mpicomm.rank * cshape[0] // self.mpicomm.size * itemsize, (self.mpicomm.rank + 1) * cshape[0] // self.mpicomm.size * itemsize, 1)
+        new = self
         if not all(self.mpicomm.allgather(local_slice.size == self.size)):  # need to reorder!
             cumsizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
             source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
-            self.value = source.get(self.value.ravel(), local_slice)
-        self.value.shape = (-1,) + cshape[1:]
-
-    def slice(self, *args):
-        """
-        Perform local array slice, e.g.:
-        >>> array.slice(0, 10, 2)
-        >>> array.slice([1, 2, 2])
-        """
-        new = self.copy()
-        new.value = self.value[Slice(*args, size=self.size).idx]
+            value = source.get(self.ravel(), local_slice)
+            new = self.__class__(value, mpicomm=self.mpicomm)
+        new.shape = (-1,) + cshape[1:]
         return new
 
     def cslice(self, *args):
@@ -664,13 +614,11 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         >>> array.cslice(0, 10, 2)
         >>> array.cslice([1, 2, 2])
         """
-        new = self.copy()
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(len(self)))
         global_slice = Slice(*args, size=cumsizes[-1])
         local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
         source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
-        new.value = source.get(self.value, local_slice)
-        return new
+        return self.__class__(source.get(self, local_slice), mpicomm=self.mpicomm)
 
     @classmethod
     def cconcatenate(cls, *others, axis=0):
@@ -679,31 +627,30 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
             raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
         if len(others) == 1 and is_sequence(others[0]):
             others = others[0]
-        new = others[0].copy()
-        axis = normalize_axis_tuple(axis, new.value.ndim)[0]
+
+        axis = normalize_axis_tuple(axis, others[0].ndim)[0]
         if axis > 1:
-            new.value = np.concatenate([other.value for other in others], axis=axis)
+            value = np.concatenate([other for other in others], axis=axis)
         else:
             source = []
             for other in others:
                 cumsizes = np.cumsum([0] + other.mpicomm.allgather(len(other)))
                 source.append(MPIScatteredSource(slice(cumsizes[other.mpicomm.rank], cumsizes[other.mpicomm.rank + 1], 1)))
             source = MPIScatteredSource.cconcatenate(*source)
-            new.value = source.get([other.value for other in others])
-        return new
+            value = source.get([other for other in others])
+        return cls(value, mpicomm=others[0].mpicomm)
 
     def cappend(self, other, **kwargs):
         """Append ``other`` to current :class:`MPIScatteredSource`."""
         return self.cconcatenate(self, [other], **kwargs)
 
-    def cextend(self, other, **kwargs):
-        """Extend (in-place) current :class:`MPIScatteredSource` with ``other``."""
-        new = self.cappend(self, other, **kwargs)
-        self.__dict__.update(new.__dict__)
-
-    def gathered(self, mpiroot=0):
+    def mpi_gather(self, mpiroot=0):
         """Return numpy array gathered on rank ``mpiroot`` (``None`` to gather on all ranks)."""
-        return mpi.gather_array(self.value, mpicomm=self.mpicomm, root=mpiroot)
+        return mpi.gather_array(self, mpicomm=self.mpicomm, root=mpiroot)
+
+    def mpi_reduce(self, mpiroot=0, op='sum'):
+        """Return numpy array reduced on rank ``mpiroot`` (``None`` to reduce on all ranks)."""
+        return mpi.reduce_array(self, mpicomm=self.mpicomm, op=op)
 
     def csort(self, axis=0, kind=None):
         """
@@ -730,15 +677,15 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         """
         # import mpsort
         # self.value = mpsort.sort(self.value, orderby=None, comm=self.mpicomm, tuning=[])
-        self.value = mpi.sort_array(self.value, axis=axis, kind=kind, mpicomm=self.mpicomm)  # most naive implementation
+        self.data = mpi.sort_array(self, axis=axis, kind=kind, mpicomm=self.mpicomm).data  # most naive implementation
 
     def csum(self, axis=0):
         """Collective array sum along ``axis``."""
-        return mpi.sum_array(self.value, axis=axis, mpicomm=self.mpicomm)
+        return mpi.sum_array(self, axis=axis, mpicomm=self.mpicomm)
 
     def caverage(self, weights=None, axis=0):
         """Collective array average along ``axis``."""
-        return mpi.average_array(self.value, weights=weights, axis=axis, mpicomm=self.mpicomm)
+        return mpi.average_array(self, weights=weights, axis=axis, mpicomm=self.mpicomm)
 
     def cmean(self, axis=0):
         """Collective array mean along ``axis``."""
@@ -778,7 +725,7 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         out : array
             The variance of the variables.
         """
-        return mpi.var_array(self.value, axis=axis, fweights=fweights, aweights=aweights, ddof=ddof, mpicomm=self.mpicomm)
+        return mpi.var_array(self, axis=axis, fweights=fweights, aweights=aweights, ddof=ddof, mpicomm=self.mpicomm)
 
     def cstd(self, axis=0, fweights=None, aweights=None, ddof=1):
         """
@@ -790,19 +737,19 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
 
     def cmin(self, axis=0):
         """Collective minimum along ``axis``."""
-        return mpi.min_array(self.value, axis=axis, mpicomm=self.mpicomm)
+        return mpi.min_array(self, axis=axis, mpicomm=self.mpicomm)
 
     def cmax(self, axis=0):
         """Collective maximum along ``axis``."""
-        return mpi.max_array(self.value, axis=axis, mpicomm=self.mpicomm)
+        return mpi.max_array(self, axis=axis, mpicomm=self.mpicomm)
 
     def cargmin(self, axis=0):
         """Local index and rank of collective minimum along ``axis``."""
-        return mpi.argmin_array(self.value, axis=axis, mpicomm=self.mpicomm)
+        return mpi.argmin_array(self, axis=axis, mpicomm=self.mpicomm)
 
     def cargmax(self, axis=0):
         """Local index and rank of collective maximum along ``axis``."""
-        return mpi.argmax_array(self.value, axis=axis, mpicomm=self.mpicomm)
+        return mpi.argmax_array(self, axis=axis, mpicomm=self.mpicomm)
 
     def cquantile(self, q, weights=None, axis=0, interpolation='linear'):
         """
@@ -861,36 +808,7 @@ class MPIScatteredArray(NDArrayLike, BaseClass, metaclass=BaseMetaClass):
         ----
         Inspired from https://github.com/minaskar/cronus/blob/master/cronus/plot.py.
         """
-        return mpi.weighted_quantile_array(self.value, q, weights=weights, axis=axis, interpolation=interpolation, mpicomm=self.mpicomm)
-
-
-def _make_getter(name):
-
-    def getter(self):
-        return getattr(self.value, name)
-
-    return property(getter)
-
-
-def _make_getter_setter(name):
-
-    def getter(self):
-        return getattr(self.value, name)
-
-    def setter(self, value):
-        setattr(self.value, name, value)
-
-    return property(getter, setter)
-
-
-for name in ['size']:
-
-    setattr(MPIScatteredArray, name, _make_getter(name))
-
-
-for name in ['shape', 'dtype']:
-
-    setattr(MPIScatteredArray, name, _make_getter_setter(name))
+        return mpi.weighted_quantile_array(self, q, weights=weights, axis=axis, interpolation=interpolation, mpicomm=self.mpicomm)
 
 
 def _make_constructor(name):

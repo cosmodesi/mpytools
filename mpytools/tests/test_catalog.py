@@ -45,19 +45,6 @@ def test_slice():
     assert Slice.snap(slice(2, 20), slice(20, 2, -1)) == [Slice(slice(2, 20)), Slice(slice(20, 2, -1))]
 
 
-def test_mpi():
-    # array = np.arange(100)
-    array = np.ones(100, dtype='f4, f8, i4')
-    array[:] = np.arange(array.size)
-    mpicomm = mpi.COMM_WORLD
-    if mpicomm.rank == 0:
-        mpi.send_array(array, dest=1, tag=43, mpicomm=mpicomm)
-    if mpicomm.rank == 1:
-        array2 = mpi.recv_array(source=0, tag=43, mpicomm=mpicomm)
-        for name in array.dtype.names:
-            assert np.allclose(array2[name], array[name])
-
-
 def test_scattered_source():
 
     mpicomm = mpi.COMM_WORLD
@@ -92,7 +79,7 @@ def test_cslice():
         for name in ['RA']:
             assert np.all(test.cget(name) == ref.cget(name)[sl])
 
-    assert np.all(ref.cindices().gathered(mpiroot=None) == np.arange(ref.csize))
+    assert np.all(ref.cindices().mpi_gather(mpiroot=None) == np.arange(ref.csize))
     for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
         getattr(ref, name)(itemshape=3)
     ref.full(fill_value=4.)
@@ -171,13 +158,22 @@ def test_io():
 
             test = ref.from_array(ref.to_array())
             assert test == ref
-            test = ref.from_array(ref.to_array().gathered(mpiroot=0), mpiroot=0)
+            test = ref.from_array(ref.to_array().mpi_gather(mpiroot=0), mpiroot=0)
             assert test == ref
             fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.npy'), root=0)
             test.save(fn)
             test = Catalog.load(fn)
             assert test.attrs == ref.attrs
             assert test == ref
+
+
+def test_misc():
+    csize = 100 * mpi.COMM_WORLD.size
+    size = mpi.local_size(csize)
+    rng = mpi.MPIRandomState(size, seed=42)
+    ref = Catalog(data={'RA': rng.uniform(0., 1.)})
+    for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
+        assert getattr(ref, name)(itemshape=2).shape == (size, 2)
 
 
 def test_memory():
@@ -206,9 +202,9 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    # test_mpi()
     test_slice()
     test_scattered_source()
     test_cslice()
     test_io()
+    test_misc()
     test_memory()
