@@ -5,10 +5,10 @@ import functools
 
 import numpy as np
 
-from . import mpi, utils
-from .mpi import CurrentMPIComm
-from .utils import BaseClass
-from .array import Slice, MPIScatteredSource, MPIScatteredArray
+from . import utils
+from .utils import BaseClass, CurrentMPIComm
+from . import core as mpy
+from .core import Slice, MPIScatteredSource
 from .io import FileStack, select_columns
 
 
@@ -57,30 +57,30 @@ def cast_array(array, return_type=None, mpicomm=None):
 
     return_type : str, default=None
         If ``None``, directly return ``array``.
-        If "ndarray", return :class:`np.ndarray` instance.
-        If "scattered", return :class:`MPIScatteredArray` instance.
+        If "nparray", return :class:`np.ndarray` instance.
+        If "mpyarray", return :class:`mpyarray` instance.
 
     mpicomm : MPI communicator, default=None
         The current MPI communicator.
 
     Returns
     -------
-    array : array, MPIScatteredArray
+    array : array
     """
     if return_type is None:
         return array
     return_type = return_type.lower()
-    if return_type == 'scattered':
-        return MPIScatteredArray(array, mpicomm=mpicomm)
-    if return_type in ['array', 'ndarray']:
+    if return_type == 'mpyarray':
+        return mpy.array(array, mpicomm=mpicomm)
+    if return_type in ['nparray']:
         return np.array(array, copy=False)
-    raise ValueError('return_type must be in ["scattered", "array", "ndarray"]')
+    raise ValueError('return_type must be in ["mpyarray", "nparray"]')
 
 
 def cast_array_wrapper(func):
     """Method wrapper applying :func:`cast_array` on result."""
     @functools.wraps(func)
-    def wrapper(self, *args, return_type='scattered', **kwargs):
+    def wrapper(self, *args, return_type='mpyarray', **kwargs):
         return cast_array(func(self, *args, **kwargs), return_type=return_type, mpicomm=self.mpicomm)
 
     return wrapper
@@ -303,7 +303,7 @@ class BaseCatalog(BaseClass):
         If ``mpiroot`` is ``None`` or ``Ellipsis`` result is broadcast on all processes.
         """
         if mpiroot is None: mpiroot = Ellipsis
-        return self.get(column, return_type='scattered').mpi_gather(mpiroot=mpiroot)
+        return self.get(column, return_type='mpyarray').gather(mpiroot=mpiroot)
 
     def slice(self, *args):
         """
@@ -477,8 +477,8 @@ class BaseCatalog(BaseClass):
             If ``False``, numpy will attempt to cast types of different columns.
 
         return_type : str, default=None
-            If ``None`` or "ndarray", return :class:`np.ndarray` instance.
-            If "scattered", return :class:`MPIScatteredArray` instance.
+            If ``None`` or "nparray", return :class:`np.ndarray` instance.
+            If "mpyarray", return :class:`mpy.array` instance.
 
         Returns
         -------
@@ -497,7 +497,7 @@ class BaseCatalog(BaseClass):
 
         Parameters
         ----------
-        array : array, MPIScatteredArray, dict
+        array : array, dict
             Input array to turn into catalog.
 
         columns : list, default=None
@@ -540,7 +540,7 @@ class BaseCatalog(BaseClass):
                 else:
                     value = np.asarray(array[columns.index(column)])
             if mpiroot is not None:
-                return mpi.scatter_array(value, mpicomm=mpicomm, root=mpiroot)
+                return mpy.scatter(value, mpicomm=mpicomm, mpiroot=mpiroot)
             return value
 
         new.data = {column: get(column) for column in columns}
@@ -559,7 +559,7 @@ class BaseCatalog(BaseClass):
     def deepcopy(self):
         """Deep copy."""
         new = self.copy()
-        new.data = {column: self.get(column, return_type='ndarray').copy() for column in new.data}
+        new.data = {column: self.get(column, return_type='nparray').copy() for column in new.data}
         import copy
         for name in self._attrs:
             if hasattr(self, name): setattr(new, name, copy.deepcopy(getattr(self, name)))
@@ -651,7 +651,7 @@ class BaseCatalog(BaseClass):
         See specific :class:`io.BaseFile` subclass (e.g. :class:`io.FitsFile`) for optional arguments.
         """
         source = FileStack(*args, **kwargs)
-        source.write({name: self.get(name, return_type='ndarray') for name in self.columns()})
+        source.write({name: self.get(name, return_type='nparray') for name in self.columns()})
 
     @classmethod
     @CurrentMPIComm.enable
@@ -685,7 +685,7 @@ class BaseCatalog(BaseClass):
         columns = mpicomm.bcast(columns, root=mpiroot)
         state['data'] = {}
         for name in columns:
-            state['data'][name] = mpi.scatter_array(data[name] if mpicomm.rank == mpiroot else None, mpicomm=mpicomm, root=mpiroot)
+            state['data'][name] = mpy.scatter(data[name] if mpicomm.rank == mpiroot else None, mpicomm=mpicomm, mpiroot=mpiroot)
         return cls.from_state(state, mpicomm=mpicomm)
 
     def save(self, filename):

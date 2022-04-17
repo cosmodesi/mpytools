@@ -3,8 +3,10 @@ import tempfile
 
 import numpy as np
 
-from mpytools import Catalog, mpi, setup_logging
-from mpytools.array import Slice, MPIScatteredSource
+import mpytools as mpy
+from mpytools import Catalog, setup_logging
+from mpytools.random import MPIRandomState
+from mpytools.core import Slice, local_size, MPIScatteredSource
 from mpytools.utils import MemoryMonitor
 
 
@@ -47,7 +49,7 @@ def test_slice():
 
 def test_scattered_source():
 
-    mpicomm = mpi.COMM_WORLD
+    mpicomm = mpy.COMM_WORLD
 
     carray = np.arange(100)
     sl = slice(mpicomm.rank * carray.size // mpicomm.size, (mpicomm.rank + 1) * carray.size // mpicomm.size, 1)
@@ -60,9 +62,9 @@ def test_scattered_source():
 
 def test_cslice():
 
-    csize = 10 * mpi.COMM_WORLD.size
-    size = mpi.local_size(csize)
-    rng = mpi.MPIRandomState(size, seed=42)
+    csize = 10 * mpy.COMM_WORLD.size
+    size = local_size(csize)
+    rng = MPIRandomState(size, seed=42)
     local_slice = slice(rng.mpicomm.rank * csize // rng.mpicomm.size, (rng.mpicomm.rank + 1) * csize // rng.mpicomm.size)
     ref = Catalog(data={'RA': np.arange(csize)[local_slice]})
     assert ref.csize == csize
@@ -79,7 +81,7 @@ def test_cslice():
         for name in ['RA']:
             assert np.all(test.cget(name) == ref.cget(name)[sl])
 
-    assert np.all(ref.cindices().mpi_gather(mpiroot=None) == np.arange(ref.csize))
+    assert np.all(ref.cindices().gather(mpiroot=None) == np.arange(ref.csize))
     for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
         getattr(ref, name)(itemshape=3)
     ref.full(fill_value=4.)
@@ -87,9 +89,9 @@ def test_cslice():
 
 def test_io():
 
-    csize = 100 * mpi.COMM_WORLD.size
-    size = mpi.local_size(csize)
-    rng = mpi.MPIRandomState(size, seed=42)
+    csize = 100 * mpy.COMM_WORLD.size
+    size = local_size(csize)
+    rng = MPIRandomState(size, seed=42)
     ref = Catalog(data={'RA': rng.uniform(0., 1.), 'DEC': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.), 'Position': rng.uniform(0., 1., itemshape=3)})
     mpicomm = ref.mpicomm
     assert ref.csize == csize
@@ -158,7 +160,7 @@ def test_io():
 
             test = ref.from_array(ref.to_array())
             assert test == ref
-            test = ref.from_array(ref.to_array().mpi_gather(mpiroot=0), mpiroot=0)
+            test = ref.from_array(ref.to_array().gather(mpiroot=0), mpiroot=0)
             assert test == ref
             fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.npy'), root=0)
             test.save(fn)
@@ -168,9 +170,9 @@ def test_io():
 
 
 def test_misc():
-    csize = 100 * mpi.COMM_WORLD.size
-    size = mpi.local_size(csize)
-    rng = mpi.MPIRandomState(size, seed=42)
+    csize = 100 * mpy.COMM_WORLD.size
+    size = local_size(csize)
+    rng = MPIRandomState(size, seed=42)
     ref = Catalog(data={'RA': rng.uniform(0., 1.)})
     for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
         assert getattr(ref, name)(itemshape=2).shape == (size, 2)
@@ -180,8 +182,8 @@ def test_memory():
 
     with MemoryMonitor() as mem:
 
-        size = mpi.local_size(int(1e7))
-        rng = mpi.MPIRandomState(size, seed=42)
+        size = local_size(int(1e7))
+        rng = MPIRandomState(size, seed=42)
         catalog = Catalog(data={'Position': rng.uniform(0., 1., itemshape=3)})
         catalog['Position2'] = catalog['Position'].copy()
         mem('randoms')

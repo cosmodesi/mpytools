@@ -4,11 +4,90 @@ import os
 import sys
 import time
 import logging
+import functools
+from contextlib import contextmanager
 import traceback
 
 import numpy as np
+from mpi4py import MPI
 
-from .mpi import CurrentMPIComm
+
+class CurrentMPIComm(object):
+    """Class to facilitate getting and setting the current MPI communicator."""
+    logger = logging.getLogger('CurrentMPIComm')
+
+    _stack = [MPI.COMM_WORLD]
+
+    @staticmethod
+    def enable(func):
+        """
+        Decorator to attach the current MPI communicator to the input
+        keyword arguments of ``func``, via the ``mpicomm`` keyword.
+        """
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            mpicomm = kwargs.get('mpicomm', None)
+            if mpicomm is None:
+                for arg in args:
+                    mpicomm = getattr(arg, 'mpicomm', None)
+            if mpicomm is None:
+                mpicomm = CurrentMPIComm.get()
+            kwargs['mpicomm'] = mpicomm
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    @classmethod
+    @contextmanager
+    def enter(cls, mpicomm):
+        """
+        Enter a context where the current default MPI communicator is modified to the
+        argument `comm`. After leaving the context manager the communicator is restored.
+
+        Example:
+
+        .. code:: python
+
+            with CurrentMPIComm.enter(comm):
+                cat = UniformCatalog(...)
+
+        is identical to
+
+        .. code:: python
+
+            cat = UniformCatalog(..., comm=comm)
+
+        """
+        cls.push(mpicomm)
+
+        yield
+
+        cls.pop()
+
+    @classmethod
+    def push(cls, mpicomm):
+        """Switch to a new current default MPI communicator."""
+        cls._stack.append(mpicomm)
+        if mpicomm.rank == 0:
+            cls.logger.info('Entering a current communicator of size {:d}'.format(mpicomm.size))
+        cls._stack[-1].barrier()
+
+    @classmethod
+    def pop(cls):
+        """Restore to the previous current default MPI communicator."""
+        mpicomm = cls._stack[-1]
+        if mpicomm.rank == 0:
+            cls.logger.info('Leaving current communicator of size {:d}'.format(mpicomm.size))
+        cls._stack[-1].barrier()
+        cls._stack.pop()
+        mpicomm = cls._stack[-1]
+        if mpicomm.rank == 0:
+            cls.logger.info('Restored current communicator to size {:d}'.format(mpicomm.size))
+
+    @classmethod
+    def get(cls):
+        """Get the default current MPI communicator. The initial value is ``MPI.COMM_WORLD``."""
+        return cls._stack[-1]
 
 
 @CurrentMPIComm.enable

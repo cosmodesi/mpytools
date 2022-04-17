@@ -1,4 +1,5 @@
 from .catalog import Catalog
-from .array import MPIScatteredArray
-from .mpi import CurrentMPIComm, MPIRandomState
-from .utils import setup_logging
+from .core import *
+from . import random
+from .utils import CurrentMPIComm, setup_logging
+from mpi4py.MPI import COMM_WORLD

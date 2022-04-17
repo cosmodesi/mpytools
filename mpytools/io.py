@@ -5,10 +5,10 @@ import re
 
 import numpy as np
 
-from . import mpi, utils
-from .mpi import CurrentMPIComm
-from .utils import BaseClass, is_sequence
-from .array import Slice, MPIScatteredSource
+from . import utils
+from .utils import BaseClass, is_sequence, CurrentMPIComm
+from . import core as mpy
+from .core import Slice, MPIScatteredSource
 
 
 def select_columns(columns, include=None, exclude=None):
@@ -306,9 +306,9 @@ class FileStack(BaseClass):
             isdict = self.mpicomm.bcast(isdict, root=mpiroot)
             if isdict:
                 columns = self.mpicomm.bcast(list(data.keys()) if self.mpicomm.rank == mpiroot else None, root=mpiroot)
-                data = {name: mpi.scatter_array(data[name] if self.mpicomm.rank == mpiroot else None, mpicomm=self.mpicomm, root=self.mpiroot) for name in columns}
+                data = {name: mpy.scatter(data[name] if self.mpicomm.rank == mpiroot else None, mpicomm=self.mpicomm, mpiroot=self.mpiroot) for name in columns}
             else:
-                data = mpi.scatter_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
+                data = mpy.scatter(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
         if isdict:
             for name in data: size = len(data[name]); break
         else:
@@ -570,7 +570,7 @@ class FitsFile(BaseFile):
         return toret[::rows.step]
 
     def _write_data(self, data, header):
-        data = mpi.gather_array(data, mpicomm=self.mpicomm, root=self.mpiroot)
+        data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
         if self.is_mpi_root():
             fitsio.write(self.filename, data, header=header, clobber=True)
 
@@ -672,7 +672,7 @@ class HDF5File(BaseFile):
                 h5py.File(self.filename, 'w', driver=driver, **kwargs)
             first = True
             for name in data:
-                array = mpi.gather_array(data[name], mpicomm=self.mpicomm, root=self.mpiroot)
+                array = mpy.gather(data[name], mpicomm=self.mpicomm, mpiroot=self.mpiroot)
                 if self.is_mpi_root():
                     with h5py.File(self.filename, 'a', driver=driver, **kwargs) as file:
                         grp = file
@@ -970,7 +970,7 @@ class AsdfFile(BaseFile):
             return np.array(file[column][rows], copy=True)  # otherwise, segfault due to memorymap
 
     def _write_data(self, data, header):
-        data = {key: mpi.gather_array(data[key], mpicomm=self.mpicomm, root=self.mpiroot) for key in data}
+        data = {key: mpy.gather(data[key], mpicomm=self.mpicomm, mpiroot=self.mpiroot) for key in data}
         if self.is_mpi_root():
             af = asdf.AsdfFile(data)
             # Write the data to a new file
