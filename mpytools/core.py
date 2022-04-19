@@ -706,8 +706,8 @@ def reduce(data, op='sum', mpiroot=0, mpicomm=None):
                 toret[name] = tmp
         return toret
 
+    shape, dtype = data.shape, data.dtype
     data = np.ascontiguousarray(data)
-    dtype = data.dtype
 
     if np.issubdtype(dtype, np.floating):
         # Otherwise, weird error   File "mpi4py/MPI/commimpl.pxi", line 142, in mpi4py.MPI.PyMPI_Lock KeyError: '<d'
@@ -716,14 +716,14 @@ def reduce(data, op='sum', mpiroot=0, mpicomm=None):
     if mpiroot is Ellipsis:
         total = np.empty_like(data)
         mpicomm.Allreduce(data, total, op=op)
-        total = total.astype(dtype)
+        total = total.reshape(shape).astype(dtype, copy=False)
     else:
         total = None
         if mpicomm.rank == mpiroot:
             total = np.empty_like(data)
         mpicomm.Reduce(data, total, op=op, root=mpiroot)
         if mpicomm.rank == mpiroot:
-            total = total.astype(dtype)
+            total = total.reshape(shape).astype(dtype, copy=False)
     return total
 
 
@@ -763,6 +763,8 @@ def gather(data, mpiroot=0, mpicomm=None):
         return None
 
     # Need C-contiguous order
+    data = np.asarray(data)
+    shape, dtype = data.shape, data.dtype
     data = np.ascontiguousarray(data)
 
     local_length = data.shape[0]
@@ -881,60 +883,14 @@ def bcast(data, mpiroot=0, mpicomm=None):
     Returns
     -------
     recvbuffer : array_like
-        The chunk of ``data`` that each rank gets.
+        ``data`` on each rank.
     """
-
-    # check for bad input
     if mpicomm.rank == mpiroot:
-        isscalar = np.isscalar(data)
+        recvbuffer = data
+        for rank in range(mpicomm.size):
+            if rank != mpiroot: send(data, rank, tag=0, blocking=True, mpicomm=mpicomm)
     else:
-        isscalar = None
-    isscalar = mpicomm.bcast(isscalar, root=mpiroot)
-
-    if isscalar:
-        return mpicomm.bcast(data, root=mpiroot)
-
-    if mpicomm.rank == mpiroot:
-        # Need C-contiguous order
-        data = np.ascontiguousarray(data)
-        shape_and_dtype = (data.shape, data.dtype)
-    else:
-        shape_and_dtype = None
-
-    # each rank needs shape/dtype of input data
-    shape, dtype = mpicomm.bcast(shape_and_dtype, root=mpiroot)
-
-    # object dtype is not supported
-    fail = False
-    if dtype.char == 'V':
-        fail = any(dtype[name] == 'O' for name in dtype.names)
-    else:
-        fail = dtype == 'O'
-    if fail:
-        raise ValueError('"object" data type not supported in broadcast_array; please specify specific data type')
-
-    # initialize empty data on non-mpiroot ranks
-    if mpicomm.rank != mpiroot:
-        np_dtype = np.dtype((dtype, shape))
-        data = np.empty(0, dtype=np_dtype)
-
-    # setup the custom dtype
-    duplicity = np.prod(shape, dtype='intp')
-    itemsize = duplicity * dtype.itemsize
-    dt = MPI.BYTE.Create_contiguous(itemsize)
-    dt.Commit()
-
-    # the return array
-    recvbuffer = np.empty(shape, dtype=dtype, order='C')
-
-    # the send offsets
-    counts = np.ones(mpicomm.size, dtype='i', order='C')
-    offsets = np.zeros_like(counts, order='C')
-
-    # do the scatter
-    mpicomm.Barrier()
-    mpicomm.Scatterv([data, (counts, offsets), dt], [recvbuffer, dt], root=mpiroot)
-    dt.Free()
+        recvbuffer = recv(source=mpiroot, tag=0, mpicomm=mpicomm)
     return recvbuffer
 
 
@@ -988,7 +944,7 @@ def scatter(data, counts=None, mpiroot=0, mpicomm=None):
     else:
         fail = dtype == 'O'
     if fail:
-        raise ValueError('"object" data type not supported in scatter_array; please specify specific data type')
+        raise ValueError('"object" data type not supported in scatter; please specify specific data type')
 
     # initialize empty data on non-mpiroot ranks
     if mpicomm.rank != mpiroot:
@@ -1052,8 +1008,9 @@ def send(data, dest, tag=0, blocking=True, mpicomm=None):
     mpicomm : MPI communicator, default=None
         Communicator. Defaults to current communicator.
     """
+    data = np.asarray(data)
+    shape, dtype = (data.shape, data.dtype)
     data = np.ascontiguousarray(data)
-    shape, dtype = data.shape, data.dtype
 
     fail = False
     if dtype.char == 'V':
@@ -1061,7 +1018,7 @@ def send(data, dest, tag=0, blocking=True, mpicomm=None):
     else:
         fail = dtype == 'O'
     if fail:
-        raise ValueError('"object" data type not supported in send_array; please specify specific data type')
+        raise ValueError('"object" data type not supported in send; please specify specific data type')
 
     duplicity = np.prod(shape[1:], dtype='intp')
     itemsize = duplicity * dtype.itemsize
@@ -1129,46 +1086,6 @@ def local_size(size, mpicomm=None):
     # localsize = size // mpicomm.size
     # if mpicomm.rank < size % mpicomm.size: localsize += 1
     return stop - start
-
-
-def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
-    """
-    Apply operation ``npop`` on input array ``data`` and reduce the result
-    with MPI operation ``mpiop``(e.g. sum).
-
-    Parameters
-    ----------
-    data : array
-        Input array to reduce with operations ``npop`` and ``mpiop``.
-
-    npop : callable
-        Function that takes ``data``, ``args``, ``axis`` and ``kwargs`` as argument,
-        and keyword arguments and return (array) value.
-
-    mpiop : MPI operation
-        MPI operation to apply on ``npop`` result.
-
-    mpicomm : MPI communicator
-        Communicator. Defaults to current communicator.
-
-    axis : int, list, default=None
-        Array axis (axes) on which to apply operations.
-        If ``0`` not in ``axis``, ``mpiop`` is not used.
-        Defaults to all axes.
-
-    Returns
-    -------
-    out : scalar, array
-        Result of reduce operations ``npop`` and ``mpiop``.
-        If ``0`` in ``axis``, result is broadcast on all ranks.
-        Else, result is local.
-    """
-    toret = npop(data, *args, axis=axis, **kwargs)
-    if axis is None: axis = tuple(range(data.ndim))
-    else: axis = normalize_axis_tuple(axis, data.ndim)
-    if 0 in axis:
-        return reduce(toret, mpicomm=mpicomm, op=mpiop, mpiroot=Ellipsis)
-    return toret
 
 
 @CurrentMPIComm.enable
@@ -1266,6 +1183,46 @@ def cshape(data, mpicomm=None):
     """Return global shape of ``data`` array (scattered along the first dimension)."""
     shape = np.shape(data)
     return (mpicomm.allreduce(shape[0], op=MPI.SUM),) + shape[1:]
+
+
+def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
+    """
+    Apply operation ``npop`` on input array ``data`` and reduce the result
+    with MPI operation ``mpiop``(e.g. sum).
+
+    Parameters
+    ----------
+    data : array
+        Input array to reduce with operations ``npop`` and ``mpiop``.
+
+    npop : callable
+        Function that takes ``data``, ``args``, ``axis`` and ``kwargs`` as argument,
+        and keyword arguments and return (array) value.
+
+    mpiop : MPI operation
+        MPI operation to apply on ``npop`` result.
+
+    mpicomm : MPI communicator
+        Communicator. Defaults to current communicator.
+
+    axis : int, list, default=None
+        Array axis (axes) on which to apply operations.
+        If ``0`` not in ``axis``, ``mpiop`` is not used.
+        Defaults to all axes.
+
+    Returns
+    -------
+    out : scalar, array
+        Result of reduce operations ``npop`` and ``mpiop``.
+        If ``0`` in ``axis``, result is broadcast on all ranks.
+        Else, result is local.
+    """
+    toret = npop(data, *args, axis=axis, **kwargs)
+    if axis is None: axis = tuple(range(data.ndim))
+    else: axis = normalize_axis_tuple(axis, data.ndim)
+    if 0 in axis:
+        return reduce(toret, mpicomm=mpicomm, op=mpiop, mpiroot=Ellipsis)
+    return toret
 
 
 def _reduce_arg_array(data, npop, mpiargop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
