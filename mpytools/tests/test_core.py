@@ -6,28 +6,40 @@ from mpytools import setup_logging
 
 def test_mpi():
     # array = np.arange(100)
-    array = np.ones(100, dtype='f4, f8, i4')
-    array[:] = np.arange(array.size)
-    mpicomm = mpy.COMM_WORLD
-    if mpicomm.rank == 0:
-        mpy.send(array, dest=1, tag=43, mpicomm=mpicomm)
-    if mpicomm.rank == 1:
-        array2 = mpy.recv(source=0, tag=43, mpicomm=mpicomm)
-        for name in array.dtype.names:
-            assert np.allclose(array2[name], array[name])
+    array1 = np.ones(100, dtype='f4, f8, i4')
+    array1[:] = np.arange(array1.size)
+    array2 = np.ones(0, dtype='f4, f8, i4')
+    array3 = np.ones(0, dtype='f8')
 
-    def assert_allclose(test, ref):
-        for name in ref.dtype.names:
-            assert np.allclose(test[name], ref[name])
+    for array in [array1, array2, array3]:
 
-    gathered = mpicomm.allgather(array)
-    assert_allclose(mpy.gather(array, mpiroot=None), np.concatenate(gathered))
-    assert_allclose(mpy.bcast(array, mpiroot=0), array)
-    assert_allclose(mpy.gather(mpy.scatter(array, mpiroot=0), mpiroot=None), array)
-    test = mpy.reduce(array, mpiroot=None)
-    ref = np.empty_like(gathered[0])
-    for name in ref.dtype.names: ref[name] = sum(tt[name] for tt in gathered)
-    assert_allclose(test, ref)
+        mpicomm = mpy.COMM_WORLD
+
+        def assert_allclose(test, ref):
+            assert test.shape == ref.shape
+            if ref.dtype.names is not None:
+                for name in ref.dtype.names:
+                    assert np.allclose(test[name], ref[name])
+            else:
+                assert np.allclose(test, ref)
+
+        if mpicomm.rank == 0:
+            mpy.send(array, dest=1, tag=43, mpicomm=mpicomm)
+        if mpicomm.rank == 1:
+            array2 = mpy.recv(source=0, tag=43, mpicomm=mpicomm)
+            assert_allclose(array2, array)
+
+        gathered = mpicomm.allgather(array)
+        assert_allclose(mpy.gather(array, mpiroot=None), np.concatenate(gathered))
+        assert_allclose(mpy.bcast(array, mpiroot=0), array)
+        assert_allclose(mpy.gather(mpy.scatter(array, mpiroot=0), mpiroot=None), array)
+        test = mpy.reduce(array, mpiroot=None)
+        ref = np.empty_like(gathered[0])
+        if ref.dtype.names is not None:
+            for name in ref.dtype.names: ref[name] = sum(tt[name] for tt in gathered)
+        else:
+            ref = sum(gathered)
+        assert_allclose(test, ref)
 
 
 def test_array():
@@ -52,7 +64,9 @@ def test_array():
     assert np.allclose(mpi_array.gather(mpiroot=None), carray)
 
     for name in ['csum', 'cprod', 'cmean', 'cmin', 'cmax', 'cvar', 'cstd']:
-        assert np.allclose(getattr(mpy, name)(mpi_array), getattr(carray, name[1:])())
+        tmp = getattr(mpy, name)(mpi_array)
+        assert tmp.ndim == 0
+        assert np.allclose(tmp, getattr(carray, name[1:])())
         assert np.allclose(getattr(mpi_array, name)(), getattr(carray, name[1:])())
 
     assert np.allclose(mpy.caverage(mpi_array, weights=mpi_array), np.average(carray, weights=carray))
