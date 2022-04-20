@@ -16,4 +16,4 @@ setup(name=package_basename,
       license='BSD3',
       url='http://github.com/cosmodesi/mpytools',
       install_requires=['numpy', 'scipy'],
-      packages=['mpytools'])
+      packages=[package_basename])
