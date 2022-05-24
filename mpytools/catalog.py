@@ -113,12 +113,15 @@ class BaseCatalog(BaseClass):
             The current MPI communicator.
         """
         self.data = {}
+        if isinstance(data, BaseCatalog):
+            self.__dict__.update(data.copy().__dict__)
+            return
         if columns is None:
             columns = list((data or {}).keys())
         if data is not None:
             for name in columns:
                 self[name] = data[name]
-        self.attrs = attrs or {}
+        self.attrs = dict(attrs or {})
         self.mpicomm = mpicomm
         self.mpiroot = 0
 
@@ -163,8 +166,7 @@ class BaseCatalog(BaseClass):
         if columns is None: columns = self.columns()
         source = {col: self[col] for col in columns}
         from nbodykit.lab import ArrayCatalog
-        attrs = {key: value for key, value in self.attrs.items() if key != 'fitshdr'}
-        return ArrayCatalog(source, **attrs)
+        return ArrayCatalog(source, **self.attrs)
 
     def __len__(self):
         """Return catalog (local) length (``0`` if no column)."""
@@ -260,6 +262,16 @@ class BaseCatalog(BaseClass):
     def nans(self, itemshape=(), **kwargs):
         """Array of size :attr:`size` filled with :attr:`np.nan`."""
         return self.ones(itemshape=itemshape, **kwargs) * np.nan
+
+    @property
+    def header(self):
+        return self.source.header
+
+    @property
+    def source(self):
+        if self.has_source:
+            return self._source
+        raise AttributeError('{} has no source, i.e. no file has been read'.format(self.__class__.__name__))
 
     @property
     def has_source(self):
@@ -432,7 +444,7 @@ class BaseCatalog(BaseClass):
             if other.mpicomm is not new.mpicomm:
                 raise ValueError('Input catalogs with different mpicomm')
             if new_columns and other_columns and set(other_columns) != set(new_columns):
-                raise ValueError('Cannot extend samples as columns do not match: {} != {}.'.format(other_columns, new_columns))
+                raise ValueError('Cannot concatenate catalogs as columns do not match: {} != {}.'.format(other_columns, new_columns))
 
         in_data = {column: any(column in other.data for other in others) for column in new_columns}
         if any(in_data.values()):
@@ -633,25 +645,27 @@ class BaseCatalog(BaseClass):
         return True
 
     @classmethod
-    def read(cls, *args, **kwargs):
+    def read(cls, *args, attrs=None, **kwargs):
         """
         Read catalog from (list of) input file names.
         Specify ``filetype`` if file extension is not recognised.
         See specific :class:`io.BaseFile` subclass (e.g. :class:`io.FitsFile`) for optional arguments.
         """
+        attrs = dict(attrs or {})
+        init_kwargs = {name: kwargs.pop(name) for name in getattr(cls, '_init_kwargs', []) if name in kwargs}
         source = FileStack(*args, **kwargs)
-        new = cls(attrs={'header': source.header}, mpicomm=source.mpicomm)
+        new = cls(attrs=attrs, mpicomm=source.mpicomm, **init_kwargs)
         new._source = source
         return new
 
-    def write(self, *args, **kwargs):
+    def write(self, *args, header=None, **kwargs):
         """
         Save catalog to (list of) output file names.
         Specify ``filetype`` if file extension is not recognised.
         See specific :class:`io.BaseFile` subclass (e.g. :class:`io.FitsFile`) for optional arguments.
         """
         source = FileStack(*args, **kwargs)
-        source.write({name: self.get(name, return_type='nparray') for name in self.columns()})
+        source.write({name: self.get(name, return_type='nparray') for name in self.columns()}, header=header)
 
     @classmethod
     @CurrentMPIComm.enable

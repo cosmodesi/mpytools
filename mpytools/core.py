@@ -886,7 +886,7 @@ def bcast(data, mpiroot=0, mpicomm=None):
         ``data`` on each rank.
     """
     if mpicomm.rank == mpiroot:
-        recvbuffer = data
+        recvbuffer = np.asarray(data)
         for rank in range(mpicomm.size):
             if rank != mpiroot: send(data, rank, tag=0, blocking=True, mpicomm=mpicomm)
     else:
