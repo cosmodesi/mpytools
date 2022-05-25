@@ -87,6 +87,15 @@ def test_cslice():
     ref.full(fill_value=4.)
 
 
+class FakeCatalog(Catalog):
+
+    _init_kwargs = ['boxcenter']
+
+    def __init__(self, *args, boxcenter=None, **kwargs):
+        self.boxcenter = boxcenter
+        super(FakeCatalog, self).__init__(*args, **kwargs)
+
+
 def test_io():
 
     csize = 100 * mpy.COMM_WORLD.size
@@ -158,15 +167,31 @@ def test_io():
                         col = apply_slices(ref.cget(name), sls)
                         assert np.all(test.cget(name) == np.concatenate([col, col]))
 
-            test = ref.from_array(ref.to_array())
-            assert test == ref
-            test = ref.from_array(ref.to_array().gather(mpiroot=0), mpiroot=0)
-            assert test == ref
-            fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.npy'), root=0)
-            test.save(fn)
-            test = Catalog.load(fn)
-            assert test.attrs == ref.attrs
-            assert test == ref
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = '_tests'
+        test = ref.from_array(ref.to_array())
+        assert test == ref
+        test = ref.from_array(ref.to_array().gather(mpiroot=0), mpiroot=0)
+        assert test == ref
+        fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.npy'), root=0)
+        test.save(fn)
+        test = Catalog.load(fn)
+        assert test.attrs == ref.attrs
+        assert test == ref
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir = '_tests'
+        fn = os.path.join(tmp_dir, 'test.bigfile')
+        header = {'boxsize': 1.}
+        attrs = {'boxcenter': 0.}
+        ref.write(fn, group='1/', header=header)
+        test = Catalog.read(fn, group='1/', attrs=attrs)
+        assert test.header == header
+        assert test.attrs == attrs
+        test = FakeCatalog.read(fn, group='1/', attrs=attrs, boxcenter=1.)
+        assert test.header == header
+        assert test.attrs == attrs
+        assert test.boxcenter == 1.
 
 
 def test_misc():
@@ -176,6 +201,8 @@ def test_misc():
     ref = Catalog(data={'RA': rng.uniform(0., 1.)})
     for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
         assert getattr(ref, name)(itemshape=2).shape == (size, 2)
+    test = Catalog(data=ref, columns=ref.columns())
+    assert test == ref
 
 
 def test_memory():

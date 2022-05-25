@@ -42,7 +42,7 @@ def set_common_seed(seed=None, mpicomm=None):
 
 
 @CurrentMPIComm.enable
-def bcast_seed(seed=None, mpicomm=None, size=10000):
+def bcast_seed(seed=None, mpicomm=None, size=None):
     """
     Generate array of seeds.
 
@@ -54,7 +54,7 @@ def bcast_seed(seed=None, mpicomm=None, size=10000):
     mpicomm : MPI communicator, default=None
         Communicator to use for broadcasting. Defaults to current communicator.
 
-    size : int, default=10000
+    size : int, default=None
         Number of seeds to be generated.
 
     Returns

@@ -297,7 +297,7 @@ class FileStack(BaseClass):
         tmp = np.concatenate(toret, axis=0, dtype=toret[0].dtype)
         return tmp
 
-    def write(self, data, mpiroot=None):
+    def write(self, data, mpiroot=None, **kwargs):
         """Write data (numpy structured array or dict), optionally gathered on ``mpiroot``."""
         isdict = None
         if self.mpicomm.rank == mpiroot or mpiroot is None:
@@ -325,9 +325,9 @@ class FileStack(BaseClass):
             for ifile, rows in enumerate(slices):
                 rows = rows.shift(fcumsizes[ifile] - cumsizes[self.mpicomm.rank])
                 if isdict:
-                    self.files[ifile].write({name: data[name][rows.idx] for name in data})
+                    self.files[ifile].write({name: data[name][rows.idx] for name in data}, **kwargs)
                 else:
-                    self.files[ifile].write(data[rows.idx])
+                    self.files[ifile].write(data[rows.idx], **kwargs)
 
 
 def get_filetype(filetype=None, filename=None):
@@ -559,7 +559,7 @@ class FitsFile(BaseFile):
             # make sure we crash if data is wrong or missing
             if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
                 raise IOError('{} extension {} is not a readable binary table'.format(self.filename, self.ext))
-            return {'csize': file.get_nrows(), 'columns': file.get_rec_dtype()[0].names, 'attrs': dict(file.read_header()), 'ext': self.ext}
+            return {'csize': file.get_nrows(), 'columns': file.get_rec_dtype()[0].names, 'header': dict(file.read_header()), 'ext': self.ext}
 
     def _read_rows(self, column, rows):
         start, stop = rows.start, rows.stop
@@ -630,7 +630,7 @@ class HDF5File(BaseFile):
             for name in columns:
                 if grp[name].shape[0] != size:
                     raise IOError('Column {} has different length (expected {:d}, found {:d})'.format(name, size, grp[name].shape[0]))
-            return {'csize': size, 'columns': columns, 'attrs': dict(grp.attrs)}
+            return {'csize': size, 'columns': columns, 'header': dict(grp.attrs)}
 
     def _read_rows(self, column, rows):
         with h5py.File(self.filename, 'r') as file:
@@ -698,7 +698,7 @@ class BinaryFile(BaseFile):
 
     def _read_header_root(self):
         array = open_memmap(self.filename, mode='r')
-        return {'csize': len(array), 'columns': array.dtype.names, 'attrs': {}}
+        return {'csize': len(array), 'columns': array.dtype.names, 'header': {}}
 
     def _read_rows(self, column, rows):
         return open_memmap(self.filename, mode='r')[rows][column]
@@ -768,7 +768,7 @@ class BigFile(BaseFile):
             if not isinstance(header_blocks, (tuple, list)): header_blocks = [header_blocks]
             headers = []
             for header in header_blocks:
-                if header in columns and header not in headers: headers.append(header)
+                if header in file and header not in headers: headers.append(header)
             # Append the dataset itself
             headers.append(self.group.strip('/') + '/.')
 
@@ -782,17 +782,17 @@ class BigFile(BaseFile):
 
             attrs = {}
             for header in headers:
-                # copy over the attrs
+                # Copy over the attrs
                 fattrs = file[header].attrs
                 for key in fattrs:
                     value = fattrs[key]
-                    # load a JSON representation if str starts with json:://
+                    # Load a JSON representation if str starts with json:://
                     if isinstance(value, str) and value.startswith('json://'):
                         attrs[key] = json.loads(value[7:])  # , cls=JSONDecoder)
-                    # copy over an array
+                    # Copy over an array
                     else:
                         attrs[key] = np.array(value, copy=True)
-            return {'csize': csize, 'columns': columns, 'attrs': attrs}
+            return {'csize': csize, 'columns': columns, 'header': attrs}
 
     def _read_rows(self, column, rows):
         with bigfile.File(filename=self.filename)[self.group] as file:
@@ -856,9 +856,8 @@ class BigFile(BaseFile):
                 sources.append(array)
                 regions.append((slice(offset, offset + len(array)),))
 
-            # writer header afterwards, such that header can be a block that saves
-            # data.
-            if header is not None:
+            # writer header afterwards, such that header can be a block that saves data.
+            if header:
                 try:
                     bb = file.open('header')
                 except:
@@ -962,7 +961,7 @@ class AsdfFile(BaseFile):
                     # copy over an array
                     else:
                         attrs[key] = np.array(value, copy=True)
-            return {'csize': csize, 'columns': columns, 'attrs': attrs}
+            return {'csize': csize, 'columns': columns, 'header': attrs}
 
     def _read_rows(self, column, rows):
         with asdf.open(self.filename) as file:
