@@ -29,6 +29,10 @@ def test_mpi():
             array2 = mpy.recv(source=0, tag=43, mpicomm=mpicomm)
             assert_allclose(array2, array)
 
+        array2 = mpy.sendrecv(array, source=0, dest=1, tag=43, mpicomm=mpicomm)
+        if mpicomm.rank == 1:
+            assert_allclose(array2, array)
+
         gathered = mpicomm.allgather(array)
         assert_allclose(mpy.gather(array, mpiroot=None), np.concatenate(gathered))
         assert_allclose(mpy.bcast(array, mpiroot=0), array)

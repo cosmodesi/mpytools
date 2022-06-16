@@ -381,6 +381,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
     extensions = []
     _type_read_rows = ['slice', 'index']
     _type_write_data = ['dict', 'array']
+    _read_nslices_max = 10
 
     @CurrentMPIComm.enable
     def __init__(self, filename, mpicomm=None):
@@ -412,13 +413,14 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
 
     def _read_header(self):
         # Read file header, the end user does not need to call it
+        state = None
         if self.is_mpi_root():
             self.log_info('Reading {}.'.format(self.filename))
             state = self._read_header_root()
             state['_csize'] = int(state.pop('csize'))
             state['_columns'] = list(state.pop('columns'))
             state['_header'] = dict(state.pop('header', {}))
-        state = self.mpicomm.bcast(state if self.is_mpi_root() else None, root=self.mpiroot)
+        state = self.mpicomm.bcast(state, root=self.mpiroot)
         self.__dict__.update(state)
         return state['_header']
 
@@ -446,15 +448,24 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
     def read(self, column, rows=slice(None)):
         """Read input ``rows`` of column name ``column``."""
         sl = Slice(rows, size=self.csize)
-        rows = [sl.idx]
+        rows, idxs = [sl.idx], None
         if sl.is_array:
             if 'index' not in self._type_read_rows:
-                rows = sl.to_slices()
+                nslices = sl.nslices()
+                if nslices > self._read_nslices_max:  # too many slices, let's just read (min, max + 1, 1) and mask afterwards
+                    rows = [slice(sl.min, sl.max + 1, 1)]
+                    idxs = [Slice(rows[0]).find(sl).idx]
+                else:
+                    rows = sl.to_slices()
         else:
             if 'slice' not in self._type_read_rows:
                 rows = [sl.to_array()]
-        tmp = [self._read_rows(column, rows=row) for row in rows]
-        return np.concatenate(tmp, axis=0, dtype=tmp[0].dtype)
+        toret = []
+        for irow, row in enumerate(rows):
+            tmp = self._read_rows(column, rows=row)
+            if idxs is not None: tmp = tmp[idxs[irow]]
+            toret.append(tmp)
+        return np.concatenate(toret, axis=0, dtype=tmp[0].dtype)
 
     def write(self, data, header=None):
         """
@@ -566,8 +577,7 @@ class FitsFile(BaseFile):
         if rows.step < 0:
             if stop is None: stop = -1
             start, stop = stop + 1, start + 1
-        toret = fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(start, stop))
-        return toret[::rows.step]
+        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(start, stop))[::rows.step]
 
     def _write_data(self, data, header):
         data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
