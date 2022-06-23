@@ -12,7 +12,7 @@ from . import utils
 from .utils import BaseClass, is_sequence, CurrentMPIComm
 
 
-__all__ = ['array', 'reduce', 'gather', 'bcast', 'scatter', 'send', 'recv',
+__all__ = ['array', 'reduce', 'gather', 'bcast', 'scatter', 'send', 'recv', 'sendrecv',
            'csize', 'cshape', 'creshape', 'cslice', 'cconcatenate', 'cappend',
            'csum', 'cprod', 'cmean', 'caverage', 'cmin', 'cmax', 'cargmin', 'cargmax', 'csort', 'cquantile',
            'cvar', 'cstd', 'ccov', 'ccorrcoef']
@@ -101,6 +101,11 @@ class Slice(BaseClass):
         if self.is_array:
             return np.array(self.idx, copy=copy)
         return np.arange(self.idx.start, self.idx.stop, self.idx.step)
+
+    def nslices(self):
+        if self.is_array:
+            return 1 + np.sum(np.diff(np.diff(self.idx)) != 0)
+        return 1
 
     def to_slices(self):
         """Turn :class:`Slice` into a list of python slices."""
@@ -1061,6 +1066,19 @@ def recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
 
     mpicomm.Recv([data, dt], source=source, tag=tag)
     return data
+
+
+@CurrentMPIComm.enable
+def sendrecv(data, source=0, dest=0, tag=0, blocking=True, mpicomm=None):
+    """Send array from process ``source`` and receive on process ``dest``."""
+    if dest == source:
+        return np.asarray(data)
+    if mpicomm.rank == source:
+        send(data, dest=dest, tag=tag, blocking=blocking, mpicomm=mpicomm)
+    toret = None
+    if mpicomm.rank == dest:
+        toret = recv(source=source, tag=tag, mpicomm=mpicomm)
+    return toret
 
 
 @CurrentMPIComm.enable

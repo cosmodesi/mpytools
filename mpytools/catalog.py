@@ -206,16 +206,12 @@ class BaseCatalog(BaseClass):
         columns : list
             Catalog column names, after optional selections.
         """
-        toret = None
+        columns = list(self.data.keys())
+        source = getattr(self, '_source', None)
+        if source is not None:
+            columns += [column for column in source.columns if column not in columns]  # source.columns must be called from all processes
 
-        if self.is_mpi_root():
-            columns = list(self.data.keys())
-            source = getattr(self, '_source', None)
-            if source is not None:
-                columns += [column for column in source.columns if column not in columns]
-            toret = select_columns(columns, include=include, exclude=exclude)
-
-        return self.mpicomm.bcast(toret, root=self.mpiroot)
+        return select_columns(columns, include=include, exclude=exclude)
 
     def __contains__(self, column):
         """Whether catalog contains column name ``column``."""
