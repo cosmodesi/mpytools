@@ -342,15 +342,13 @@ class Slice(BaseClass):
         return [Slice(sl) for sl in slices]
 
     @CurrentMPIComm.enable
-    def send(self, dest, tag=0, blocking=True, mpicomm=None):
+    def send(self, dest, tag=0, mpicomm=None):
         """Send slice to rank ``dest``."""
-        if blocking: mpisend = mpicomm.send
-        else: mpisend = mpicomm.isend
-        mpisend(self.is_array, dest=dest, tag=tag + 1)
+        mpicomm.send(self.is_array, dest=dest, tag=tag + 1)
         if self.is_array:
-            send(self.idx, dest=dest, tag=tag, blocking=blocking, mpicomm=mpicomm)
+            send(self.idx, dest=dest, tag=tag, mpicomm=mpicomm)
         else:
-            mpisend(self.idx, dest=dest, tag=tag)
+            mpicomm.send(self.idx, dest=dest, tag=tag)
 
     @classmethod
     @CurrentMPIComm.enable
@@ -893,7 +891,7 @@ def bcast(data, mpiroot=0, mpicomm=None):
     if mpicomm.rank == mpiroot:
         recvbuffer = np.asarray(data)
         for rank in range(mpicomm.size):
-            if rank != mpiroot: send(data, rank, tag=0, blocking=True, mpicomm=mpicomm)
+            if rank != mpiroot: send(data, rank, tag=0, mpicomm=mpicomm)
     else:
         recvbuffer = recv(source=mpiroot, tag=0, mpicomm=mpicomm)
     return recvbuffer
@@ -992,7 +990,7 @@ def scatter(data, counts=None, mpiroot=0, mpicomm=None):
 
 
 @CurrentMPIComm.enable
-def send(data, dest, tag=0, blocking=True, mpicomm=None):
+def send(data, dest, tag=0, mpicomm=None):
     """
     Send input array ``data`` to process ``dest``.
 
@@ -1006,9 +1004,6 @@ def send(data, dest, tag=0, blocking=True, mpicomm=None):
 
     tag : int, default=0
         Message identifier.
-
-    blocking : bool, default=False
-        Blocking?
 
     mpicomm : MPI communicator, default=None
         Communicator. Defaults to current communicator.
@@ -1030,10 +1025,8 @@ def send(data, dest, tag=0, blocking=True, mpicomm=None):
     dt = MPI.BYTE.Create_contiguous(itemsize)
     dt.Commit()
 
-    if blocking: mpisend, mpiSend = mpicomm.send, mpicomm.Send
-    else: mpisend, mpiSend = mpicomm.isend, mpicomm.Isend
-    mpisend((shape, dtype), dest=dest, tag=tag)
-    mpiSend([data, dt], dest=dest, tag=tag)
+    mpicomm.send((shape, dtype), dest=dest, tag=tag)
+    mpicomm.Send([data, dt], dest=dest, tag=tag)
 
 
 @CurrentMPIComm.enable
@@ -1046,7 +1039,7 @@ def recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
     source : int, default=MPI.ANY_SOURCE
         Rank of process to receive array from.
 
-    tag : int, default=0
+    tag : int, default=MPI.ANY_TAG
         Message identifier.
 
     mpicomm : MPI communicator, default=None
@@ -1069,12 +1062,12 @@ def recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
 
 
 @CurrentMPIComm.enable
-def sendrecv(data, source=0, dest=0, tag=0, blocking=True, mpicomm=None):
+def sendrecv(data, source=0, dest=0, tag=0, mpicomm=None):
     """Send array from process ``source`` and receive on process ``dest``."""
     if dest == source:
         return np.asarray(data)
     if mpicomm.rank == source:
-        send(data, dest=dest, tag=tag, blocking=blocking, mpicomm=mpicomm)
+        send(data, dest=dest, tag=tag, mpicomm=mpicomm)
     toret = None
     if mpicomm.rank == dest:
         toret = recv(source=source, tag=tag, mpicomm=mpicomm)
