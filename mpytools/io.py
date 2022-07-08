@@ -286,14 +286,12 @@ class FileStack(BaseClass):
         for islice, slices in enumerate(self.fileslices(return_index=True)):
             tmp, idx = [], []
             for ifile, (rows, iidx) in enumerate(slices):
-                if rows:
-                    tmp.append(self.files[ifile].read(column, rows=rows))
-                    idx.append(iidx.idx)
-            if tmp:
-                if self.slices[islice].is_array:
-                    toret.append(np.concatenate(tmp, axis=0, dtype=tmp[0].dtype)[np.argsort(np.concatenate(idx, axis=0))])
-                else:
-                    toret += [tmp[ii] for ii in np.argsort([iidx.start for iidx in idx])]
+                tmp.append(self.files[ifile].read(column, rows=rows))
+                idx.append(iidx.idx)
+            if self.slices[islice].is_array:
+                toret.append(np.concatenate(tmp, axis=0, dtype=tmp[0].dtype)[np.argsort(np.concatenate(idx, axis=0))])
+            else:
+                toret += [tmp[ii] for ii in np.argsort([iidx.start for iidx in idx])]
         tmp = np.concatenate(toret, axis=0, dtype=toret[0].dtype)
         return tmp
 
@@ -453,7 +451,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
             if 'index' not in self._type_read_rows:
                 nslices = sl.nslices()
                 if nslices > self._read_nslices_max:  # too many slices, let's just read (min, max + 1, 1) and mask afterwards
-                    rows = [slice(sl.min, sl.max + 1, 1)]
+                    rows = [slice(sl.min, sl.max + 1, 1) if sl else slice(0, 0, 1)]
                     idxs = [Slice(rows[0]).find(sl).idx]
                 else:
                     rows = sl.to_slices()
@@ -465,7 +463,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
             tmp = self._read_rows(column, rows=row)
             if idxs is not None: tmp = tmp[idxs[irow]]
             toret.append(tmp)
-        return np.concatenate(toret, axis=0, dtype=tmp[0].dtype)
+        return np.concatenate(toret, axis=0, dtype=toret[0].dtype)
 
     def write(self, data, header=None):
         """

@@ -113,7 +113,9 @@ class Slice(BaseClass):
         from operator import itemgetter
         from collections import deque
         if self.is_array:
-            if self.idx.size <= 1:
+            if self.idx.size == 0:
+                yield slice(0, 0, 1)
+            elif self.idx.size == 1:
                 yield slice(self.idx.flat[0], self.idx.flat[0] + 1, 1)
             else:
                 diff = np.diff(self.idx)
