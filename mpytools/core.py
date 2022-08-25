@@ -694,7 +694,7 @@ def reduce(data, op='sum', mpiroot=0, mpicomm=None):
     if isinstance(op, str):
         op = {'sum': MPI.SUM, 'prod': MPI.PROD, 'min': MPI.MIN, 'max': MPI.MAX}[op]
 
-    if np.isscalar(data):
+    if all(mpicomm.allgather(np.isscalar(data))):
         if mpiroot is Ellipsis:
             return mpicomm.allreduce(data, op=op)
         return mpicomm.reduce(data, op=op, root=mpiroot)
@@ -759,7 +759,7 @@ def gather(data, mpiroot=0, mpicomm=None):
     """
     if mpiroot is None: mpiroot = Ellipsis
 
-    if np.isscalar(data):
+    if all(mpicomm.allgather(np.isscalar(data))):
         if mpiroot is Ellipsis:
             return np.array(mpicomm.allgather(data))
         gathered = mpicomm.gather(data, root=mpiroot)
@@ -1288,7 +1288,7 @@ def _reduce_arg_array(data, npop, mpiargop, mpiop, *args, mpicomm=None, axis=Non
     if axis is None: axis = tuple(range(data.ndim))
     else: axis = normalize_axis_tuple(axis, data.ndim)
     if 0 in axis:
-        if np.isscalar(arg):
+        if all(mpicomm.allgather(np.isscalar(arg))):
             rank = mpicomm.allreduce((val, mpicomm.rank), op=mpiargop)[1]
             arg = mpicomm.bcast(arg, root=rank)
             return arg, rank
