@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 
 import numpy as np
 
@@ -833,6 +834,7 @@ class BigFile(BaseFile):
                     assert stop1 == value.shape[1]
                 self.bb.write(start, value)
 
+        shutil.rmtree(self.filename, ignore_errors=True)  # otherwise previous columns are kept
         with bigfile.FileMPI(comm=self.mpicomm, filename=self.filename, create=True) as file:
 
             sources, targets, regions = [], [], []
