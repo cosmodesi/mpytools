@@ -654,14 +654,21 @@ class BaseCatalog(BaseClass):
         new._source = source
         return new
 
-    def write(self, *args, header=None, **kwargs):
+    def write(self, *args, header=None, columns=None, **kwargs):
         """
         Save catalog to (list of) output file names.
         Specify ``filetype`` if file extension is not recognised.
         See specific :class:`io.BaseFile` subclass (e.g. :class:`io.FitsFile`) for optional arguments.
+
+        Parameters
+        ----------
+        columns : list, default=None
+            Columns to write. Defaults to all columns.
         """
         source = FileStack(*args, **kwargs)
-        source.write({name: self.get(name, return_type='nparray') for name in self.columns()}, header=header)
+        if columns is None:
+            columns = self.columns()
+        source.write({column: self.get(column, return_type='nparray') for column in columns}, header=header)
 
     @classmethod
     @CurrentMPIComm.enable
@@ -698,9 +705,14 @@ class BaseCatalog(BaseClass):
             state['data'][name] = mpy.scatter(data[name] if mpicomm.rank == mpiroot else None, mpicomm=mpicomm, mpiroot=mpiroot)
         return cls.from_state(state, mpicomm=mpicomm)
 
-    def save(self, filename):
+    def save(self, filename, columns=None):
         """
         Save catalog to ``filename`` as *npy* file.
+
+        Parameters
+        ----------
+        columns : list, default=None
+            Columns to save. Defaults to all columns.
 
         Warning
         -------
@@ -710,7 +722,9 @@ class BaseCatalog(BaseClass):
             self.log_info('Saving to {}.'.format(filename))
             utils.mkdir(os.path.dirname(filename))
         state = self.__getstate__()
-        state['data'] = {name: self.cget(name, mpiroot=self.mpiroot) for name in self.columns()}
+        if columns is None:
+            columns = self.columns()
+        state['data'] = {name: self.cget(name, mpiroot=self.mpiroot) for name in columns}
         if self.is_mpi_root():
             np.save(filename, state, allow_pickle=True)
 

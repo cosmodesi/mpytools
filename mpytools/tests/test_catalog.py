@@ -108,7 +108,7 @@ def test_io():
     mpicomm = ref.mpicomm
     assert ref.csize == csize
 
-    for ext in ['fits', 'hdf5', 'npy', 'bigfile', 'asdf']:
+    for ext in ['fits', 'npy', 'bigfile', 'asdf', 'hdf5']:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_dir = '_tests'
@@ -123,8 +123,10 @@ def test_io():
                 assert np.all(test['Position'] == ref['Position'])
                 test['Position'] += 10
             fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.{}'.format(i, ext)), root=0) for i in range(4)]
-            test.write(fns)
+            test.write(fns, columns=['Position', 'RA'])
             assert np.allclose(test['Position'], ref['Position'] + 10)
+            test2 = Catalog.read(fns)
+            assert set(test2.columns()) == set(['Position', 'RA'])  # bigfile does not conserve column order
             ref.write(fns)
             test = Catalog.read(fns)
             assert np.all(test['Position'] == ref['Position'])
@@ -186,6 +188,9 @@ def test_io():
         test = Catalog.load(fn)
         assert test.attrs == ref.attrs
         assert test == ref
+        test.save(fn, columns=['RA', 'DEC'])
+        test = Catalog.load(fn)
+        assert test.columns() == ['RA', 'DEC']
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = '_tests'
