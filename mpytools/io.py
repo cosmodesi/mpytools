@@ -841,7 +841,11 @@ class BigFile(BaseFile):
                 self.bb.write(start, value)
 
         if overwrite:
-            shutil.rmtree(os.path.join(self.filename, self.group.strip('/')), ignore_errors=True)  # otherwise previous columns are kept
+            self.mpicomm.Barrier()
+            try:
+                shutil.rmtree(os.path.join(self.filename, self.group.strip('/')), ignore_errors=True)  # otherwise previous columns are kept
+            except FileNotFoundError:
+                pass
 
         with bigfile.FileMPI(comm=self.mpicomm, filename=self.filename, create=True) as file:
 
