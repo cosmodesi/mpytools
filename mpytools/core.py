@@ -64,13 +64,13 @@ class Slice(BaseClass):
                 if step > 0: start = 0
                 else: raise ValueError('Input slice must be bounded, or provide "size"')
             if stop is None:
-                if step < 0: stop = -1
+                if step < 0: stop = None
                 else: raise ValueError('Input slice must be bounded, or provide "size"')
-            if step < 0 and stop > start or step > 0 and stop < start:
+            elif step < 0 and stop > start or step > 0 and stop < start:
                 stop = start = 0
-            else:
-                stop = (stop - start + (-1) ** (step > 0)) // step * step + start + (-1) ** (step < 0)
-                if stop < 0: stop = None
+            #else:
+            #    stop = (stop - start + (-1) ** (step > 0)) // step * step + start + (-1) ** (step < 0)
+            #if stop < 0: stop = None  # None instead of -1 for e.g. slice(4, -1, -1)
             sl = slice(start, stop, step)
         else:
             sl = np.array(sl, copy=copy)
@@ -228,31 +228,23 @@ class Slice(BaseClass):
         """
         sl2 = self.__class__(*args)
         if self.is_array or sl2.is_array:
-            idx2 = sl2.to_array()
-            mask = (idx2 >= 0) & (idx2 < self.size)
-            idx = self.to_array()[idx2[mask]]
-            # indices in idx2
-            if return_index: idx2 = np.flatnonzero(mask)
+            idx = self.to_array()
+            if sl2.is_array:
+                mask = (sl2.idx >= 0) & (sl2.idx < self.size)
+                idx = idx[sl2.idx[mask]]
+                # indices in idx2
+                if return_index: idx2 = np.flatnonzero(mask)
+            else:
+                start, stop, step = sl2.idx.indices(idx.size)
+                idx = idx[sl2.idx]
+                idx2 = slice(start, stop, step)
         else:
-            # I = a i + b
-            # I' = a' I + b' = a' a i + a' b + b' ' is self
-            x0 = self.idx.step * sl2.idx.start + self.idx.start
-            step = sl2.idx.step * self.idx.step
-            min2 = self.idx.step * sl2.min + self.idx.start
-            max2 = self.idx.step * sl2.max + self.idx.start
-            if self.idx.step < 0: min2, max2 = max2, min2
-            imin = (max(self.min, min2) - x0) / step
-            imax = (min(self.max, max2) - x0) / step
-            if step < 0:
-                imin, imax = imax, imin
-            istart = math.ceil(imin)
-            istop = math.floor(imax)
-            if istop < istart:
+            sl = range(self.idx.start, self.idx.stop if self.idx.stop is not None else -1, self.idx.step)[sl2.idx]
+            start, stop, step = sl.start, sl.stop, sl.step
+            if step < 0 and stop > start or step > 0 and stop < start:
                 idx = slice(0, 0, 1)
                 idx2 = slice(0, 0, 1)
             else:
-                start = step * istart + x0
-                stop = step * istop + x0 + (-1) ** (step < 0)
                 if step < 0 and stop < 0: stop = None
                 idx = slice(start, stop, step)
                 idx2 = self.find(sl2, return_index=True)[1]
@@ -279,7 +271,11 @@ class Slice(BaseClass):
             if stop is not None: nstop = min(nstop, stop)
             if nstart < 0 and nstop <= 0:
                 return self.empty()
-            if nstep < 0 and nstop < 0: nstop = None
+            if nstep < 0 and nstop < 0:
+                nstop = None
+            else:
+                # if nstep < 0 and nstop > 0, then nstart > nstop, so if nstart < 0 should yield zero slice
+                nstart = max(nstart, 0)
             idx = slice(nstart, nstop, nstep)
         return self.__class__(idx, copy=False)
 
