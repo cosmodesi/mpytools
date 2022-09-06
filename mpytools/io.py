@@ -466,7 +466,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
             toret.append(tmp)
         return np.concatenate(toret, axis=0, dtype=toret[0].dtype)
 
-    def write(self, data, header=None):
+    def write(self, data, header=None, **kwargs):
         """
         Write input data to :attr:`filename`.
 
@@ -489,7 +489,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
             data = np.asarray(data)
             if 'array' not in self._type_write_data:
                 data = {name: data[name] for name in data.dtype.names}
-        self._write_data(data, header=header or {})
+        self._write_data(data, header=header or {}, **kwargs)
 
     def _read_header_root(self):
         # Must return a dictionary with (at least)
@@ -729,15 +729,13 @@ except ImportError: bigfile = None
 
 
 class BigFile(BaseFile):
-
     """Class to read/write a BigFile from/to disk."""
-
     name = 'bigfile'
     extensions = ['bigfile']
     _type_read_rows = ['slice']
     _type_write_data = ['dict']
 
-    def __init__(self, filename, group='/', header=None, exclude=None, **kwargs):
+    def __init__(self, filename, group='/', header=None, exclude=None, overwrite=False, **kwargs):
         """
         Initialize :class:`BigFile`.
 
@@ -756,6 +754,11 @@ class BigFile(BaseFile):
             List of datasets to exclude (when reading file size).
             Can contain *regex* or Unix-style patterns.
 
+        overwrite : bool, default=False
+            By default, :meth:`write` adds columns to the file/group.
+            One can pass ``overwrite = True`` to remove previous file/group directory
+            (at one's own risk) and write a new file.
+
         kwargs : dict
             Arguments for :class:`BaseFile` (mpicomm).
         """
@@ -767,6 +770,7 @@ class BigFile(BaseFile):
         if not self.group.endswith('/'): self.group = self.group + '/'
         self.header_blocks = header
         self.exclude = exclude
+        self.overwrite = bool(overwrite)
         super(BigFile, self).__init__(filename=filename, **kwargs)
 
     def _read_header_root(self):
@@ -811,8 +815,10 @@ class BigFile(BaseFile):
                 start, stop = stop + 1, start + 1
             return bigfile.Dataset(file, [column])[column][start:stop][::step]
 
-    def _write_data(self, data, header):
+    def _write_data(self, data, header, overwrite=None):
         columns = list(data.keys())
+        if overwrite is None:
+            overwrite = self.overwrite
 
         # FIXME: merge this logic into bigfile
         # the slice writing support in bigfile 0.1.47 does not
@@ -834,7 +840,9 @@ class BigFile(BaseFile):
                     assert stop1 == value.shape[1]
                 self.bb.write(start, value)
 
-        shutil.rmtree(self.filename, ignore_errors=True)  # otherwise previous columns are kept
+        if overwrite:
+            shutil.rmtree(os.path.join(self.filename, self.group.strip('/')), ignore_errors=True)  # otherwise previous columns are kept
+
         with bigfile.FileMPI(comm=self.mpicomm, filename=self.filename, create=True) as file:
 
             sources, targets, regions = [], [], []

@@ -123,7 +123,10 @@ def test_io():
                 assert np.all(test['Position'] == ref['Position'])
                 test['Position'] += 10
             fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.{}'.format(i, ext)), root=0) for i in range(4)]
-            test.write(fns, columns=['Position', 'RA'])
+            if ext == 'bigfile':
+                test.write(fns, columns=['Position', 'RA'], overwrite=True)
+            else:
+                test.write(fns, columns=['Position', 'RA'])
             assert np.allclose(test['Position'], ref['Position'] + 10)
             test2 = Catalog.read(fns)
             assert set(test2.columns()) == set(['Position', 'RA'])  # bigfile does not conserve column order
@@ -197,7 +200,7 @@ def test_io():
         fn = os.path.join(tmp_dir, 'test.bigfile')
         header = {'boxsize': 1.}
         attrs = {'boxcenter': 0.}
-        ref.write(fn, group='1/', header=header)
+        ref.write(fn, group='1/', header=header, overwrite=True)
         test = Catalog.read(fn, group='1/', attrs=attrs)
         assert test.header == header
         assert test.attrs == attrs
