@@ -108,7 +108,7 @@ def test_io():
     mpicomm = ref.mpicomm
     assert ref.csize == csize
 
-    for ext in ['fits', 'npy', 'bigfile', 'asdf', 'hdf5']:
+    for ext in ['fits', 'npy', 'bigfile', 'asdf', 'hdf5'][:3]:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_dir = '_tests'

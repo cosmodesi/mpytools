@@ -846,6 +846,7 @@ class BigFile(BaseFile):
                 shutil.rmtree(os.path.join(self.filename, self.group.strip('/')), ignore_errors=True)  # otherwise previous columns are kept
             except FileNotFoundError:
                 pass
+            self.mpicomm.Barrier()
 
         with bigfile.FileMPI(comm=self.mpicomm, filename=self.filename, create=True) as file:
 
