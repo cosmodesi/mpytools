@@ -177,7 +177,8 @@ class FileStack(BaseClass):
         # catalog slices
         cumsizes = np.cumsum([0] + self.filesizes)
         for sli in self.slices:
-            # print(self.mpicomm.rank, sli, [Slice(start, stop, 1) for start, stop in zip(cumsizes[:-1], cumsizes[1:])], [Slice(start, stop, 1).find(sli) for start, stop in zip(cumsizes[:-1], cumsizes[1:])])
+            #for start, stop in zip(cumsizes[:-1], cumsizes[1:]):
+            #     print(self.mpicomm.rank, sli, start, stop, Slice(start, stop, 1).find(sli, return_index=return_index))
             yield [Slice(start, stop, 1).find(sli, return_index=return_index) for start, stop in zip(cumsizes[:-1], cumsizes[1:])]
 
     @property
@@ -207,8 +208,9 @@ class FileStack(BaseClass):
         new = self.copy()
         global_slice = Slice(*args, size=self.csize)
         local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
-        cumsizes = np.cumsum([sum(self.mpicomm.allgather(self.size)[:self.mpicomm.rank])] + [sl.size for sl in self.slices])
+        #print(self.mpicomm.rank, local_slice)
         if local_slice.is_array or self._is_slice_array:
+            cumsizes = np.cumsum([sum(self.mpicomm.allgather(self.size)[:self.mpicomm.rank])] + [sl.size for sl in self.slices])
             slices = [slice(size1, size2, 1) for size1, size2 in zip(cumsizes[:-1], cumsizes[1:])]
             source = MPIScatteredSource(*slices)
             new._slices = [Slice(source.get([sl.to_array() for sl in self._slices], local_slice))]
@@ -217,14 +219,16 @@ class FileStack(BaseClass):
             tmp = []
             cumsize = 0
             for sli in all_slices:
-                self_slice_in_irank = sli.slice(local_slice.shift(-cumsize), return_index=False)
-                # print(self.mpicomm.rank, local_slice, local_slice.shift(-cumsize), cumsize, sli, self_slice_in_irank, '\n')
+                #self_slice_in_irank = sli.slice(local_slice.shift(-cumsize), return_index=False)
+                #print(self.mpicomm.rank, local_slice, local_slice.shift(-cumsize), sli, sli.size, self_slice_in_irank, '\n')
+                self_slice_in_irank = sli.slice(Slice(cumsize, cumsize + sli.size).find(local_slice), return_index=False)
+                #print(self.mpicomm.rank, local_slice, sli, sli.size, self_slice_in_irank, '\n')
                 if self_slice_in_irank: tmp.append(self_slice_in_irank)
                 cumsize += sli.size
             if local_slice.idx.step < 0:
                 tmp = tmp[::-1]
             new._slices = Slice.snap(*tmp)
-            # print(self.mpicomm.rank, new._slices)
+            #print(self.mpicomm.rank, new._slices)
         return new
 
     @classmethod
@@ -317,9 +321,9 @@ class FileStack(BaseClass):
         nfiles = len(self.files)
         for ifile, file in enumerate(self.files):
             file._csize = (ifile + 1) * csize // nfiles - ifile * csize // nfiles
-        self._slices = None
         fcumsizes = np.cumsum([0] + self.filesizes)
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(size))
+        self._slices = [Slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank] + size, 1)]
         for islice, slices in enumerate(self.fileslices()):
             for ifile, rows in enumerate(slices):
                 rows = rows.shift(fcumsizes[ifile] - cumsizes[self.mpicomm.rank])
@@ -378,7 +382,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
     """
     name = 'base'
     extensions = []
-    _type_read_rows = ['slice', 'index']
+    _type_read_rows = ['slice', 'sslice', 'islice', 'index']
     _type_write_data = ['dict', 'array']
     _read_nslices_max = 10
 
@@ -461,8 +465,21 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
                 rows = [sl.to_array()]
         toret = []
         for irow, row in enumerate(rows):
+            idx = None
+            if idxs is not None: idx = idxs[irow]
+            if isinstance(row, slice):
+                start, stop, step = row.start, row.stop, row.step
+                if step < 0:
+                    if stop is None: stop = -1
+                    start, stop = stop + 1, start + 1
+                if row.step != 1 and 'sslice' not in self._type_read_rows:
+                    row = slice(start, stop, 1)
+                    idx = slice(None, None, step)
+                elif row.step < 0 and 'islice' not in self._type_read_rows:
+                    row = slice(start, stop, abs(step))
+                    idx = slice(None, None, -1)
             tmp = self._read_rows(column, rows=row)
-            if idxs is not None: tmp = tmp[idxs[irow]]
+            if idx is not None: tmp = tmp[idx]
             toret.append(tmp)
         return np.concatenate(toret, axis=0, dtype=toret[0].dtype)
 
@@ -572,11 +589,7 @@ class FitsFile(BaseFile):
             return {'csize': file.get_nrows(), 'columns': file.get_rec_dtype()[0].names, 'header': dict(file.read_header()), 'ext': self.ext}
 
     def _read_rows(self, column, rows):
-        start, stop = rows.start, rows.stop
-        if rows.step < 0:
-            if stop is None: stop = -1
-            start, stop = stop + 1, start + 1
-        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(start, stop))[::rows.step]
+        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(rows.start, rows.stop))
 
     def _write_data(self, data, header):
         data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
@@ -606,7 +619,7 @@ class HDF5File(BaseFile):
     """
     name = 'hdf5'
     extensions = ['hdf', 'h4', 'hdf4', 'he2', 'h5', 'hdf5', 'he5', 'h5py']
-    _type_read_rows = ['slice', 'index']
+    _type_read_rows = ['slice', 'sslice', 'index']
     _type_write_data = ['dict']
 
     def __init__(self, filename, group='/', **kwargs):
@@ -645,12 +658,7 @@ class HDF5File(BaseFile):
         with h5py.File(self.filename, 'r') as file:
             grp = file[self.group]
             if isinstance(rows, slice):
-                start, stop, step = rows.start, rows.stop, rows.step
-                if step < 0:
-                    if stop is None: stop = -1
-                    start, stop, step = stop + 1, start + 1, abs(step)
-                    return grp[column][start:stop:step][::-1]
-                return grp[column][start:stop:step]
+                return grp[column][rows]
             rows, inverse = np.unique(rows, return_inverse=True)
             return grp[column][rows][inverse]
 
@@ -702,7 +710,7 @@ class BinaryFile(BaseFile):
 
     name = 'bin'
     extensions = ['npy']
-    _type_read_rows = ['slice', 'index']
+    _type_read_rows = ['slice']
     _type_write_data = ['array']
 
     def _read_header_root(self):
@@ -809,11 +817,7 @@ class BigFile(BaseFile):
 
     def _read_rows(self, column, rows):
         with bigfile.File(filename=self.filename)[self.group] as file:
-            start, stop, step = rows.start, rows.stop, rows.step
-            if step < 0:
-                if stop is None: stop = -1
-                start, stop = stop + 1, start + 1
-            return bigfile.Dataset(file, [column])[column][start:stop][::step]
+            return bigfile.Dataset(file, [column])[column][rows]
 
     def _write_data(self, data, header, overwrite=None):
         columns = list(data.keys())
@@ -921,7 +925,7 @@ class AsdfFile(BaseFile):
     """
     name = 'asdf'
     extensions = ['asdf']
-    _type_read_rows = ['slice']
+    _type_read_rows = ['slice', 'sslice']
     _type_write_data = ['dict']
 
     def __init__(self, filename, group='', header=None, exclude=None, **kwargs):

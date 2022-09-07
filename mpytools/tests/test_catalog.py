@@ -30,10 +30,10 @@ def test_slice():
     assert np.allclose(sl.find([0, 1, 1, 1, 2, 3]).idx, [0, 1, 1, 1, 2, 3])
     assert np.allclose(Slice(2, None, size=100).find([0, 1, 1, 1, 2, 3]).idx, [0, 1])
 
-    assert sl.slice(slice(10, 120, 2)).idx == slice(10, 99, 2)
+    assert sl.slice(slice(10, 120, 2)).idx == slice(10, 100, 2)
     assert sl.slice(slice(10, None, -2)).idx == slice(10, None, -2)
-    assert sl.slice(slice(120, 2, -2)).idx == slice(98, 3, -2)
-    assert sl.slice(slice(120, 2, -2), return_index=True) == (slice(98, 3, -2), slice(11, 59, 1))
+    assert sl.slice(slice(120, 2, -2)).idx == slice(99, 2, -2)
+    assert sl.slice(slice(120, 2, -2), return_index=True) == (slice(99, 2, -2), slice(11, 59, 1))
     assert np.allclose(sl_array.slice(slice(10, 120, 2)).idx, np.arange(10, 100, 2))
     assert sl.shift(20).idx == slice(20, 120, 1)
     assert np.allclose(sl_array.shift(20).idx, 20 + np.arange(100))
@@ -107,32 +107,34 @@ def test_io():
     ref = Catalog(data={'RA': rng.uniform(0., 1.), 'DEC': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.), 'Position': rng.uniform(0., 1., itemshape=3)})
     mpicomm = ref.mpicomm
     assert ref.csize == csize
+    ref = ref[ref['Z'] < 0.9]
+    csize = ref.csize
+    rsize = csize // mpy.COMM_WORLD.size #- 1
 
-    for ext in ['fits', 'npy', 'bigfile', 'asdf', 'hdf5'][:3]:
+    for ext in ['fits', 'npy', 'bigfile', 'asdf', 'hdf5']:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_dir = '_tests'
             fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.{}'.format(ext)), root=0)
             ref.write(fn)
+            fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.{}'.format(i, ext)), root=0) for i in range(4)]
+            ref.write(fns)
 
-            #fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.{}'.format(i, ext)), root=0) for i in range(4)]
-            #ref.write(fns)
             for ii in range(15):
                 test = Catalog.read(fn)
                 assert set(test.columns()) == set(ref.columns())
-                assert np.all(test['Position'] == ref['Position'])
+                assert np.all(test.cget('Position') == ref.cget('Position'))
                 test['Position'] += 10
-            fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.{}'.format(i, ext)), root=0) for i in range(4)]
             if ext == 'bigfile':
                 test.write(fns, columns=['Position', 'RA'], overwrite=True)
             else:
                 test.write(fns, columns=['Position', 'RA'])
-            assert np.allclose(test['Position'], ref['Position'] + 10)
+            assert np.allclose(test.cget('Position'), ref.cget('Position') + 10)
             test2 = Catalog.read(fns)
             assert set(test2.columns()) == set(['Position', 'RA'])  # bigfile does not conserve column order
             ref.write(fns)
             test = Catalog.read(fns)
-            assert np.all(test['Position'] == ref['Position'])
+            assert np.all(test.cget('Position') == ref.cget('Position'))
 
             def apply_slices(tmp, sls, name=None):
                 if not isinstance(sls, list): sls = [sls]
@@ -147,31 +149,36 @@ def test_io():
                 BaseFile._read_nslices_max = nslices_max
                 for tfn in [fn, fns]:
 
-                    for sls in [slice(0, ref.size // 2), slice(ref.size // 2, 2, -2), np.arange(1, ref.size // 2, 2),
-                                np.array([1, 2, 2, 1, 3]),
-                                [slice(ref.size // 2, 2, -2), slice(2, ref.size // 4, 2)],
-                                [range(1, ref.size // 2, 2), slice(ref.size, 2, -2)],
-                                [np.arange(ref.size // 2, 1, -2), slice(ref.size, 2, -2)]]:
+                    for sls in [slice(0, rsize // 2), slice(rsize // 2, 2, -2), np.arange(1, rsize // 2, 2),
+                                np.array([1, 2, 2, 1, 3]), [slice(rsize // 2, -1, -1), slice(0, rsize * 3 // 4)],
+                                [slice(rsize // 2, 2, -2), slice(2, rsize // 4, 2)],
+                                [range(1, rsize // 2, 2), slice(rsize, 2, -2)],
+                                [np.arange(rsize // 2, 1, -2), slice(rsize, 2, -2)]]:
+
                         test = Catalog.read(tfn)
                         test['RA']
-                        test = apply_slices(test, sls)
-                        assert test.csize
+                        #print(test['RA'].size)
+                        test2 = apply_slices(test, sls)
+                        #assert test.csize
                         for name in ['Position', 'RA']:
-                            assert np.all(test[name] == apply_slices(ref[name], sls))
-                            test[name].cmean()
-                        assert test == apply_slices(ref, sls, 'slice')
+                            #print(sls, test2[name].shape, apply_slices(test[name], sls).shape)
+                            assert np.all(test2[name] == apply_slices(test[name], sls))
+                            test2[name].cmean()
+                        assert test2 == apply_slices(test, sls, 'slice')
 
-                    for sls in [slice(0, csize * 3 // 4), slice(csize * 3 // 4, 2, -1), np.arange(ref.csize // 2, 1, -2),
-                                np.array([1, 2, 2, 1, 3]),
-                                [slice(ref.csize // 2, 2, -2), slice(2, ref.csize // 4, 2)],
-                                [range(1, ref.csize // 2, 2), slice(ref.csize, 2, -2)],
-                                [np.arange(ref.csize // 2, 1, -2), slice(ref.csize, 2, -2)]]:
+                    for sls in [slice(0, csize * 3 // 4), slice(csize * 3 // 4, 2, -1), np.arange(csize // 2, 1, -2),
+                                np.array([1, 2, 2, 1, 3]), [slice(csize // 2, -1, -1), slice(0, csize * 3 // 4)],
+                                [slice(csize // 2, 2, -2), slice(2, csize // 4, 2)],
+                                [range(1, csize // 2, 2), slice(csize, 2, -2)],
+                                [np.arange(csize // 2, 1, -2), slice(csize, 2, -2)]]:
+
                         if not isinstance(sls, list): sls = [sls]
                         test = Catalog.read(tfn)
-                        test['RA']
+                        #test['RA']
                         test = apply_slices(test, sls, 'cslice')
-                        assert test.csize
+                        #assert test.csize
                         for name in ['Position', 'RA']:
+                            #print(sls, test.cget(name).shape, apply_slices(ref.cget(name), sls).shape)
                             assert np.all(test.cget(name) == apply_slices(ref.cget(name), sls))
 
                         test = Catalog.cconcatenate(apply_slices(Catalog.read(tfn), sls, 'cslice'), apply_slices(Catalog.read(tfn), sls, 'cslice'))
