@@ -796,7 +796,7 @@ class BigFile(BaseFile):
             exclude = self.exclude
             if exclude is None:
                 # By default exclude header only.
-                exclude = headers
+                exclude = list(headers)
 
             columns = select_columns(columns, exclude=exclude)
             csize = bigfile.Dataset(file[self.group], columns).size
@@ -972,7 +972,7 @@ class AsdfFile(BaseFile):
             if exclude is None:
                 # By default exclude header
                 exclude = headers
-            exclude += ['asdf_library', 'history']
+            exclude = exclude + ['asdf_library', 'history']  # to copy list
 
             columns = select_columns(columns, exclude=exclude)
             csize = len(file[columns[0]])
