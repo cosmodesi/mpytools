@@ -267,7 +267,7 @@ class BaseCatalog(BaseClass):
     def source(self):
         if self.has_source:
             return self._source
-        raise AttributeError('{} has no source, i.e. no file has been read'.format(self.__class__.__name__))
+        raise AttributeError(f'{self.__class__.__name__} has no source, i.e. no file has been read')
 
     @property
     def has_source(self):
@@ -299,7 +299,7 @@ class BaseCatalog(BaseClass):
             return self.data[column]
         if has_default:
             return default
-        raise KeyError('Column {} does not exist'.format(column))
+        raise KeyError(f'Column {column} does not exist')
 
     def set(self, column, item):
         """Set column of name ``column``."""
@@ -365,7 +365,7 @@ class BaseCatalog(BaseClass):
         :attr:`attrs` of returned catalog contains, for each key, the last value found in ``others`` :attr:`attrs` dictionaries.
         """
         if not others:
-            raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
+            raise ValueError(f'Provide at least one {cls.__name__} instance.')
         if len(others) == 1 and utils.is_sequence(others[0]):
             others = others[0]
         attrs = {}
@@ -381,7 +381,7 @@ class BaseCatalog(BaseClass):
             if other.mpicomm is not new.mpicomm:
                 raise ValueError('Input catalogs with different mpicomm')
             if new_columns and other_columns and set(other_columns) != set(new_columns):
-                raise ValueError('Cannot extend samples as columns do not match: {} != {}.'.format(other_columns, new_columns))
+                raise ValueError(f'Cannot extend samples as columns do not match: {other_columns} != {new_columns}.')
 
         in_data = {column: any(column in other.data for other in others) for column in new_columns}
 
@@ -424,7 +424,7 @@ class BaseCatalog(BaseClass):
         :attr:`attrs` of returned catalog contains, for each key, the last value found in ``others`` :attr:`attrs` dictionaries.
         """
         if not others:
-            raise ValueError('Provide at least one {} instance.'.format(cls.__name__))
+            raise ValueError(f'Provide at least one {cls.__name__} instance.')
         if len(others) == 1 and utils.is_sequence(others[0]):
             others = others[0]
         attrs = {}
@@ -440,7 +440,7 @@ class BaseCatalog(BaseClass):
             if other.mpicomm is not new.mpicomm:
                 raise ValueError('Input catalogs with different mpicomm')
             if new_columns and other_columns and set(other_columns) != set(new_columns):
-                raise ValueError('Cannot concatenate catalogs as columns do not match: {} != {}.'.format(other_columns, new_columns))
+                raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
 
         in_data = {column: any(column in other.data for other in others) for column in new_columns}
         if any(in_data.values()):
@@ -617,11 +617,11 @@ class BaseCatalog(BaseClass):
             if self.has_source is not None:
                 self._source.columns.remove(name)
             else:
-                raise KeyError('Column {} not found'.format(name)) from exc
+                raise KeyError(f'Column {name} not found') from exc
 
     def __repr__(self):
         """Return string representation of catalog, including global size and columns."""
-        return '{}(size={:d}, columns={})'.format(self.__class__.__name__, self.csize, self.columns())
+        return f'{self.__class__.__name__}(csize={self.csize:d}, size{self.size:d}, columns={self.columns()})'
 
     def __eq__(self, other):
         """Is ``self`` equal to ``other``, i.e. same type and columns? (ignoring :attr:`attrs`)"""
@@ -691,7 +691,7 @@ class BaseCatalog(BaseClass):
         """
         mpiroot = 0
         if mpicomm.rank == mpiroot:
-            cls.log_info('Loading {}.'.format(filename))
+            cls.log_info(f'Loading {filename}.')
             state = np.load(filename, allow_pickle=True)[()]
             data = state.pop('data')
             columns = list(data.keys())
@@ -719,7 +719,7 @@ class BaseCatalog(BaseClass):
         All data will be gathered on a single process, which may cause out-of-memory errors.
         """
         if self.is_mpi_root():
-            self.log_info('Saving to {}.'.format(filename))
+            self.log_info(f'Saving to {filename}.')
             utils.mkdir(os.path.dirname(filename))
         state = self.__getstate__()
         if columns is None:
