@@ -67,11 +67,18 @@ def test_array():
     mpi_array.csort(); carray.sort()
     assert np.allclose(mpi_array.gather(mpiroot=None), carray)
 
-    for name in ['csum', 'cprod', 'cmean', 'cmin', 'cmax', 'cvar', 'cstd']:
-        tmp = getattr(mpy, name)(mpi_array)
-        assert tmp.ndim == 0
-        assert np.allclose(tmp, getattr(carray, name[1:])())
-        assert np.allclose(getattr(mpi_array, name)(), getattr(carray, name[1:])())
+    mpi_array2 = mpi_array.copy()
+    if mpicomm.rank == 1: mpi_array2 = mpi_array2[:0]
+    carray2 = mpi_array2.gather(mpiroot=None)
+
+    for mpi_array, carray in zip([mpi_array2, mpi_array], [carray2, carray]):
+        for name in ['csum', 'cprod', 'cmean', 'cmin', 'cmax', 'cvar', 'cstd']:
+            tmp = getattr(mpy, name)(mpi_array)
+            assert tmp.ndim == 0
+            assert np.allclose(tmp, getattr(carray, name[1:])())
+            assert np.allclose(getattr(mpi_array, name)(), getattr(carray, name[1:])())
+        for name in ['cargmin', 'cargmax']:
+            tmp = getattr(mpy, name)(mpi_array)
 
     assert np.allclose(mpy.caverage(mpi_array, weights=mpi_array), np.average(carray, weights=carray))
     assert np.allclose(mpy.cquantile(mpi_array, q=(0.2, 0.4)), np.quantile(carray, q=(0.2, 0.4)))
@@ -91,5 +98,5 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    test_mpi()
+    # test_mpi()
     test_array()

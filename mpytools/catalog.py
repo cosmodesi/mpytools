@@ -6,7 +6,7 @@ import functools
 import numpy as np
 
 from . import utils
-from .utils import BaseClass, CurrentMPIComm
+from .utils import BaseClass, CurrentMPIComm, is_sequence
 from . import core as mpy
 from .core import Slice, MPIScatteredSource
 from .io import FileStack, select_columns
@@ -118,12 +118,12 @@ class BaseCatalog(BaseClass):
             return
         if columns is None:
             columns = list((data or {}).keys())
+        self.mpicomm = mpicomm
+        self.attrs = dict(attrs or {})
+        self.mpiroot = 0
         if data is not None:
             for name in columns:
                 self[name] = data[name]
-        self.attrs = dict(attrs or {})
-        self.mpicomm = mpicomm
-        self.mpiroot = 0
 
     def is_mpi_root(self):
         """Whether current rank is root."""
@@ -207,22 +207,18 @@ class BaseCatalog(BaseClass):
             Catalog column names, after optional selections.
         """
         columns = list(self.data.keys())
-        source = getattr(self, '_source', None)
-        if source is not None:
-            columns += [column for column in source.columns if column not in columns]  # source.columns must be called from all processes
-
         return select_columns(columns, include=include, exclude=exclude)
 
     def __contains__(self, column):
         """Whether catalog contains column name ``column``."""
-        return column in self.data or (self.has_source and column in self._source.columns)
+        return column in self.data
 
     def __iter__(self):
         """Iterate on catalog columns."""
         return iter(self.data)
 
     @cast_array_wrapper
-    def cindices(self):
+    def cindex(self):
         """Row numbers in the global catalog."""
         cumsize = sum(self.mpicomm.allgather(len(self))[:self.mpicomm.rank])
         return cumsize + np.arange(len(self))
@@ -277,9 +273,12 @@ class BaseCatalog(BaseClass):
     @cast_array_wrapper
     def get(self, column, *args, **kwargs):
         """
-        Return catalog (local) column ``column`` if exists, else return provided default.
+        Return catalog (local) column(s) ``column`` if exists, else return provided default.
         Pass ``return_type`` to specify output type, see :func:`cast_array`.
         """
+        isscalar = isinstance(column, str)
+        if isscalar: column = [column]
+        default = [None] * len(column)
         has_default = False
         if args:
             if len(args) > 1:
@@ -291,27 +290,48 @@ class BaseCatalog(BaseClass):
                 raise SyntaxError('Too many arguments!')
             has_default = True
             default = kwargs['default']
-        if column in self.data:
-            return self.data[column]
-        # if not in data, try in _source
-        if self.has_source and column in self._source.columns:
-            self.data[column] = self._source.read(column)
-            return self.data[column]
-        if has_default:
-            return default
-        raise KeyError('Column {} does not exist'.format(column))
+            if not is_sequence(default):
+                default = [default] * len(column)
+            elif len(default) != len(column):
+                raise ValueError('Provide as many default values as requested columns')
+        toret = []
+        for c, d in zip(column, default):
+            if c in self.data:
+                if self.data[c] is None:
+                    self.data[c] = self.source.read(c)
+                toret.append(self.data[c])
+            elif has_default:
+                toret.append(d)
+            else:
+                raise KeyError('Column {} does not exist'.format(c))
+        if isscalar:
+            toret = toret[0]
+        return toret
 
     def set(self, column, item):
-        """Set column of name ``column``."""
-        self.data[column] = np.asarray(item)
+        """Set column of name(s) ``column``."""
+        isscalar = isinstance(column, str)
+        if isscalar: column = [column]
+        if not is_sequence(item):
+            item = [item] * len(column)
+        elif len(item) != len(column):
+            raise ValueError('Provide as many values as requested columns')
+        for c, i in zip(column, item):
+            value = self.data[c] = np.atleast_1d(i)
+            size = self.size
+            if len(value) != size:
+                raise ValueError('Catalog size is {:d}, but input column is of length {:d}'.format(size, len(value)))
 
-    def cget(self, column, mpiroot=None):
+    def cget(self, *args, mpiroot=None, **kwargs):
         """
         Return on rank ``mpiroot`` catalog global column ``column`` if exists, else provided default.
         If ``mpiroot`` is ``None`` or ``Ellipsis`` result is broadcast on all processes.
         """
         if mpiroot is None: mpiroot = Ellipsis
-        return self.get(column, return_type='mpyarray').gather(mpiroot=mpiroot)
+        toret = self.get(*args, return_type='mpyarray', **kwargs)
+        if is_sequence(toret):
+            return [tt.gather(mpiroot=mpiroot) for tt in toret]
+        return toret.gather(mpiroot=mpiroot)
 
     def slice(self, *args):
         """
@@ -320,7 +340,7 @@ class BaseCatalog(BaseClass):
         Same reference to :attr:`attrs`.
         """
         new = self.copy()
-        name = Slice(*args).idx
+        name = Slice(*args, size=self.size).idx
         new.data = {column: self.get(column, return_type=None)[name] for column in self.data}
         if self.has_source:
             new._source = self._source.slice(name)
@@ -338,7 +358,7 @@ class BaseCatalog(BaseClass):
         local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
         source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
         for column in self.columns():
-            if column in self.data:
+            if self.data[column] is not None:
                 new[column] = source.get(self.get(column, return_type=None), local_slice)
         if self.has_source:
             new._source = self._source.cslice(global_slice)
@@ -573,6 +593,9 @@ class BaseCatalog(BaseClass):
             if hasattr(self, name): setattr(new, name, copy.deepcopy(getattr(self, name)))
         return new
 
+    def items(self, **kwargs):
+        return [(col, self[col]) for col in self.columns(**kwargs)]
+
     def __getstate__(self):
         """Return this class state dictionary."""
         data = {str(name): col for name, col in self.data.items()}
@@ -597,27 +620,53 @@ class BaseCatalog(BaseClass):
         return new
 
     def __getitem__(self, name):
-        """Get catalog column ``name`` if string, else call :meth:`slice`."""
+        """Get catalog column ``name`` if string, new catalog instance if list of strings, else call :meth:`slice`."""
         if isinstance(name, str):
             return self.get(name)
+        elif is_sequence(name) and all(isinstance(n, str) for n in name):
+            new = self.copy()
+            new.data = {n: self.data[n] for n in name}
+            return new
         return self.slice(name)
 
     def __setitem__(self, name, item):
-        """Set catalog column ``name`` if string, else set local slice ``name`` of all columns to ``item``."""
-        if isinstance(name, str):
-            return self.set(name, item)
-        for col in self.columns():
-            self[col][name] = item
+        """Set catalog column(s) ``name`` if string, else set local slice ``name`` of all columns to ``item``."""
+        isscalar = isinstance(name, str)
+        if isscalar:
+            name = [name]
+            item = [item]
+        name_is_columns = is_sequence(name) and all(isinstance(n, str) for n in name)
+        if name_is_columns:
+            if not is_sequence(item):
+                item = [item] * len(name)
+            elif len(item) != len(name):
+                raise ValueError('Provide as many values as columns')
+        if isinstance(item, BaseCatalog):
+            if name_is_columns:
+                for n in name:
+                    self[n] = item[n]
+            else:
+                for col, value in item.items():
+                    self[col][name] = value
+        elif name_is_columns:
+            self.set(name, item)
+        else:
+            for col in self.columns():
+                self[col][name] = item
 
     def __delitem__(self, name):
-        """Delete column ``name``."""
-        try:
-            del self.data[name]
-        except KeyError as exc:
-            if self.has_source is not None:
-                self._source.columns.remove(name)
-            else:
-                raise KeyError('Column {} not found'.format(name)) from exc
+        """Delete column(s) ``name``."""
+        if isinstance(name, str): name = [name]
+        for n in name:
+            try:
+                del self.data[n]
+                if self.has_source:
+                    try:
+                        del self._source[n]
+                    except KeyError:
+                        pass
+            except KeyError as exc:
+                raise KeyError('Column {} not found'.format(n)) from exc
 
     def __repr__(self):
         """Return string representation of catalog, including global size and columns."""
@@ -652,6 +701,7 @@ class BaseCatalog(BaseClass):
         source = FileStack(*args, **kwargs)
         new = cls(attrs=attrs, mpicomm=source.mpicomm, **init_kwargs)
         new._source = source
+        for column in source.columns: new.data[column] = None
         return new
 
     def write(self, *args, header=None, columns=None, **kwargs):
@@ -727,6 +777,50 @@ class BaseCatalog(BaseClass):
         state['data'] = {name: self.cget(name, mpiroot=self.mpiroot) for name in columns}
         if self.is_mpi_root():
             np.save(filename, state, allow_pickle=True)
+
+    def csort(self, orderby, size=None):
+        """
+        Return new catalog, sorted by ``orderby``.
+        One can provide the desired local ``size``, or pass 'orderby_counts',
+        in which case each rank will get a similar number of unique ``orderby`` values.
+
+        Warning
+        -------
+        ``orderby`` must be integer.
+        """
+        import mpsort
+        self[orderby]  # to check column exists
+        if size is None:
+            size = mpy.local_size(self.csize)
+        elif isinstance(size, str) and size == 'orderby_counts':
+            # Let's group particles by orderby, with ~ similar number of orderby values on each rank
+            # Caution: this may produce memory unbalance between different processes
+            # hence potential memory error, which may be avoided using some criterion to rebalance load at the cost of less efficiency
+            unique, counts = np.unique(self[orderby], return_counts=True)
+            # Proceed rank-by-rank to save memory
+            for irank in range(1, self.mpicomm.size):
+                unique_irank = mpy.sendrecv(unique, source=irank, dest=0, tag=0, mpicomm=self.mpicomm)
+                counts_irank = mpy.sendrecv(counts, source=irank, dest=0, tag=0, mpicomm=self.mpicomm)
+                if self.mpicomm.rank == 0:
+                    unique, counts = np.concatenate([unique, unique_irank]), np.concatenate([counts, counts_irank])
+                    unique, inverse = np.unique(unique, return_inverse=True)
+                    counts = np.bincount(inverse, weights=counts).astype(int)
+            # Compute catalog size that each rank must have after sorting
+            sizes = None
+            if self.mpicomm.rank == 0:
+                norderby = [(irank * unique.size // self.mpicomm.size, (irank + 1) * unique.size // self.mpicomm.size) for irank in range(self.mpicomm.size)]
+                sizes = [np.sum(counts[low:high], dtype='i8') for low, high in norderby]
+
+            # Send the number particles that each rank must contain after sorting
+            size = self.mpicomm.scatter(sizes, root=0)
+            csize = self.mpicomm.allreduce(size)
+            assert csize == self.csize, 'float in bincount messes up total counts, {:d} != {:d}'.format(csize, self.csize)
+        array = self.to_array(struct=True)
+        out = np.empty_like(array, shape=size)
+        mpsort.sort(array, orderby=orderby, out=out)
+        new = self.copy()
+        new.data = self.__class__.from_array(out, mpicomm=self.mpicomm).data
+        return new
 
 
 class Catalog(BaseCatalog):

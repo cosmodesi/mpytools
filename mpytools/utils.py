@@ -13,7 +13,7 @@ from mpi4py import MPI
 
 
 class CurrentMPIComm(object):
-    """Class to facilitate getting and setting the current MPI communicator."""
+    """Class to facilitate getting and setting the current MPI communicator, taken from nbodykit."""
     logger = logging.getLogger('CurrentMPIComm')
 
     _stack = [MPI.COMM_WORLD]

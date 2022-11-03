@@ -84,7 +84,7 @@ def test_cslice():
         for name in ['RA']:
             assert np.all(test.cget(name) == ref.cget(name)[sl])
 
-    assert np.all(ref.cindices().gather(mpiroot=None) == np.arange(ref.csize))
+    assert np.all(ref.cindex().gather(mpiroot=None) == np.arange(ref.csize))
     for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
         getattr(ref, name)(itemshape=3)
     ref.full(fill_value=4.)
@@ -221,11 +221,36 @@ def test_misc():
     csize = 100 * mpy.COMM_WORLD.size
     size = local_size(csize)
     rng = MPIRandomState(size, seed=42)
-    ref = Catalog(data={'RA': rng.uniform(0., 1.)})
+    ref = Catalog(data={'RA': rng.uniform(0., 1.), 'DEC': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.)})
     for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
         assert getattr(ref, name)(itemshape=2).shape == (size, 2)
     test = Catalog(data=ref, columns=ref.columns())
     assert test == ref
+    test = ref['Z', 'RA']
+    assert test.columns() == ['Z', 'RA']
+    Z, DEC = ref.get(['Z', 'DEC'])
+    assert np.allclose(DEC, ref['DEC'])
+    test = ref.copy()
+    test['Z', 'RA'] = ref.ones()
+    assert np.allclose(test['Z'], 1.) and not np.allclose(ref['Z'], 1.)
+    test.set(['Z', 'RA'], [ref.zeros(), ref.ones()])
+    assert np.allclose(test['Z'], 0.) and np.allclose(test['RA'], 1.)
+    test['Z', 'RA'][...] = ref['RA', 'Z']
+    assert np.allclose(test['Z'], ref['Z'])
+    del test['Z', 'RA']
+    assert test.columns() == ['DEC']
+    test = ref.copy()
+    test['index'] = test.cindex()
+    test['ob'] = test['index'][::-1]
+    test = test.csort('ob')
+    assert np.all(np.diff(test['ob']) >= 0.)
+    test = test.csort('index')
+    assert np.allclose(test['index'], test.cindex())
+    test = test[slice(10 if test.mpicomm.rank == 0 else None)]
+    test['rank'] = test.full(test.mpicomm.size - test.mpicomm.rank)
+    test = test.csort('rank', size='orderby_counts')
+    sizes = test.mpicomm.allgather(test.size)
+    assert sizes[-1] == 10
 
 
 def test_memory():

@@ -160,6 +160,9 @@ class FileStack(BaseClass):
             self._columns = [column for column in self.files[0].columns if all(column in file.columns for file in self.files[1:])]
         return self._columns
 
+    def __delitem__(self, name):
+        self.columns.remove(name)
+
     @property
     def header(self):
         """Full header, concatenating all file headers."""

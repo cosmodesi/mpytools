@@ -886,17 +886,44 @@ def bcast(data, mpiroot=0, mpicomm=None):
     recvbuffer : array_like
         ``data`` on each rank.
     """
+    if mpicomm.bcast(np.isscalar(data) if mpicomm.rank == mpiroot else None, root=mpiroot):
+        return mpicomm.bcast(data, root=mpiroot)
+
     if mpicomm.rank == mpiroot:
-        recvbuffer = np.asarray(data)
-        for rank in range(mpicomm.size):
-            if rank != mpiroot: send(data, rank, tag=0, mpicomm=mpicomm)
+        # Need C-contiguous order
+        data = np.ascontiguousarray(data)
+        shape_and_dtype = (data.shape, data.dtype)
     else:
-        recvbuffer = recv(source=mpiroot, tag=0, mpicomm=mpicomm)
-    return recvbuffer
+        shape_and_dtype = None
+
+    # each rank needs shape/dtype of input data
+    shape, dtype = mpicomm.bcast(shape_and_dtype, root=mpiroot)
+
+    fail = False
+    if dtype.char == 'V':
+        fail = any(dtype[name] == 'O' for name in dtype.names)
+    else:
+        fail = dtype == 'O'
+    if fail:
+        raise ValueError('"object" data type not supported in send; please specify specific data type')
+
+    # initialize empty data on non-mpiroot ranks
+    if mpicomm.rank != mpiroot:
+        data = np.empty(shape, dtype=dtype)
+
+    duplicity = np.prod(shape[1:], dtype='intp')
+    itemsize = duplicity * dtype.itemsize
+    dt = MPI.BYTE.Create_contiguous(itemsize)
+    dt.Commit()
+
+    mpicomm.Barrier()
+    mpicomm.Bcast([data, dt], root=mpiroot)
+    dt.Free()
+    return data
 
 
 @CurrentMPIComm.enable
-def scatter(data, counts=None, mpiroot=0, mpicomm=None):
+def scatter(data, size=None, mpiroot=0, mpicomm=None):
     """
     Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/utils.py
     Scatter the input data array across all ranks, assuming ``data`` is
@@ -909,8 +936,8 @@ def scatter(data, counts=None, mpiroot=0, mpicomm=None):
     data : array_like or None
         On `mpiroot`, this gives the data to split and scatter.
 
-    counts : list of int
-        List of the lengths of data to send to each rank.
+    size : int
+        Length of data on current rank.
 
     mpiroot : int, default=0
         The rank number that initially has the data.
@@ -923,10 +950,9 @@ def scatter(data, counts=None, mpiroot=0, mpicomm=None):
     recvbuffer : array_like
         The chunk of ``data`` that each rank gets.
     """
-    if counts is not None:
-        counts = np.asarray(counts, order='C')
-        if len(counts) != mpicomm.size:
-            raise ValueError('counts array has wrong length!')
+    counts = None
+    if size is not None:
+        counts = np.asarray(mpicomm.allgather(size), order='C')
 
     if mpicomm.rank == mpiroot:
         # Need C-contiguous order
@@ -965,7 +991,7 @@ def scatter(data, counts=None, mpiroot=0, mpicomm=None):
         newshape[0] = newlength = local_size(shape[0], mpicomm=mpicomm)
     else:
         if counts.sum() != shape[0]:
-            raise ValueError('the sum of the `counts` array needs to be equal to data length')
+            raise ValueError('The sum of the `size` needs to be equal to data length')
         newshape[0] = counts[mpicomm.rank]
 
     # the return array
@@ -1025,6 +1051,7 @@ def send(data, dest, tag=0, mpicomm=None):
 
     mpicomm.send((shape, dtype), dest=dest, tag=tag)
     mpicomm.Send([data, dt], dest=dest, tag=tag)
+    dt.Free()
 
 
 @CurrentMPIComm.enable
@@ -1056,6 +1083,7 @@ def recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
     dt.Commit()
 
     mpicomm.Recv([data, dt], source=source, tag=tag)
+    dt.Free()
     return data
 
 
@@ -1194,7 +1222,7 @@ def cshape(data, mpicomm=None):
     return (mpicomm.allreduce(shape[0], op=MPI.SUM),) + shape[1:]
 
 
-def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
+def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, empty=None, **kwargs):
     """
     Apply operation ``npop`` on input array ``data`` and reduce the result
     with MPI operation ``mpiop``(e.g. sum).
@@ -1226,7 +1254,22 @@ def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs
         If ``0`` in ``axis``, result is broadcast on all ranks.
         Else, result is local.
     """
-    toret = npop(data, *args, axis=axis, **kwargs)
+    if empty == 'use_any':
+        toret = None
+        if data.size: toret = npop(data, *args, axis=axis, **kwargs)
+        emptys = mpicomm.allgather(toret is None)
+        if any(emptys):
+            if all(emptys): raise ValueError('empty array on all ranks')
+            for source, empty in enumerate(emptys):
+                if not empty:
+                    if mpicomm.rank == source:
+                        for dest, empty in enumerate(emptys):
+                            if empty: send(toret, dest=dest, mpicomm=mpicomm)
+                break
+            if emptys[mpicomm.rank]:
+                toret = recv(source=source, mpicomm=mpicomm)
+    else:
+        toret = npop(data, *args, axis=axis, **kwargs)
     if axis is None: axis = tuple(range(data.ndim))
     else: axis = normalize_axis_tuple(axis, data.ndim)
     if 0 in axis:
@@ -1234,7 +1277,7 @@ def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, **kwargs
     return toret
 
 
-def _reduce_arg_array(data, npop, mpiargop, mpiop, *args, mpicomm=None, axis=None, **kwargs):
+def _reduce_arg_array(data, npop, mpiop, *args, mpicomm=None, axis=None, empty=None, **kwargs):
     """
     Apply operation ``npop`` on input array ``data`` and reduce the result
     with MPI operation ``mpiargop``.
@@ -1249,10 +1292,6 @@ def _reduce_arg_array(data, npop, mpiargop, mpiop, *args, mpicomm=None, axis=Non
     npop : callable
         Function that takes ``data``, ``args``, ``axis`` and ``kwargs`` as argument,
         and keyword arguments, and returns array index.
-
-    mpiargop : MPI operation
-        MPI operation to select index returned by ``npop`` among all processes
-        (takes as input ``(value, rank)`` with ``value`` array value at index returned by ``npop``).
 
     mpiop : MPI operation
         MPI operation to apply on array value at index returned by ``npop``.
@@ -1275,32 +1314,55 @@ def _reduce_arg_array(data, npop, mpiargop, mpiop, *args, mpicomm=None, axis=Non
         If ``0`` in ``axis``, rank where index resides in.
         Else, ``None``.
     """
-    arg = npop(data, *args, axis=axis, **kwargs)
-    if axis is None:
-        val = data[np.unravel_index(arg, data.shape)]
+    if empty == 'use_any':
+        arg = None
+        if data.size: arg = npop(data, *args, axis=axis, **kwargs)
     else:
-        val = np.take_along_axis(data, np.expand_dims(arg, axis=axis), axis=axis)[0]
-    # could not find out how to do mpicomm.Allreduce([tmp,MPI.INT_INT],[total,MPI.INT_INT],op=MPI.MINLOC) for e.g. (double,int)...
+        arg = npop(data, *args, axis=axis, **kwargs)
+    val = None
+    if arg is not None:
+        if axis is None:
+            val = data[np.unravel_index(arg, data.shape)]
+        else:
+            val = np.take_along_axis(data, np.expand_dims(arg, axis=axis), axis=axis)[0]
+        val = np.asarray(val)
     if axis is None: axis = tuple(range(data.ndim))
     else: axis = normalize_axis_tuple(axis, data.ndim)
+    if empty == 'use_any':
+        emptys = mpicomm.allgather(val is None)
+        if any(emptys):
+            if all(emptys): raise ValueError('empty array on all ranks')
+            for source, empty in enumerate(emptys):
+                if not empty:
+                    if mpicomm.rank == source:
+                        for dest, empty in enumerate(emptys):
+                            if empty: send(val, dest=dest, mpicomm=mpicomm)
+                    break
+            if emptys[mpicomm.rank]:
+                val = recv(source=source, mpicomm=mpicomm)
+    # could not find out how to do mpicomm.Allreduce([tmp, MPI.INT_INT], [total, MPI.INT_INT], op=MPI.MINLOC) for e.g. (double, int)...
     if 0 in axis:
         if all(mpicomm.allgather(np.isscalar(arg))):
-            rank = mpicomm.allreduce((val, mpicomm.rank), op=mpiargop)[1]
-            arg = mpicomm.bcast(arg, root=rank)
-            return arg, rank
+            total = mpicomm.allreduce(val)
+            arg_rank = mpicomm.allgather((arg, mpicomm.rank) if total == val and arg is not None else None)
+            for arg_rank in arg_rank:
+                if arg_rank is not None: return arg_rank
         # raise NotImplementedError('MPI argmin/argmax with non-scalar output is not implemented.')
         total = np.empty_like(val)
         # first decide from which rank we get the solution
         mpicomm.Allreduce(val, total, op=mpiop)
-        mask = val == total
-        rank = np.ones_like(arg) + mpicomm.size
+        mask = (val == total) & (arg is not None)
+        rank = np.full_like(mpicomm.size, val, dtype='i4')
         rank[mask] = mpicomm.rank
         totalrank = np.empty_like(rank)
         mpicomm.Allreduce(rank, totalrank, op=MPI.MIN)
-        # f.. then fill in argmin
+        # ... then fill in argmin
         mask = totalrank == mpicomm.rank
-        tmparg = np.zeros_like(arg)
-        tmparg[mask] = arg[mask]
+        for shape in mpicomm.allgather(arg.shape if arg is not None else None):
+            if shape is not None: break
+        tmparg = np.zeros(shape, dtype='i8')
+        if arg is not None:
+            tmparg[mask] = arg[mask]
         # print(mpicomm.rank,arg,mask)
         totalarg = np.empty_like(tmparg)
         mpicomm.Allreduce(tmparg, totalarg, op=MPI.SUM)
@@ -1339,25 +1401,25 @@ def cprod(data, *args, mpicomm=None, axis=None, **kwargs):
 @CurrentMPIComm.enable
 def cmin(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return minimum of input array ``data`` along ``axis``."""
-    return _reduce_op_array(data, np.min, MPI.MIN, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_op_array(data, np.min, MPI.MIN, *args, mpicomm=mpicomm, axis=axis, empty='use_any', **kwargs)
 
 
 @CurrentMPIComm.enable
 def cmax(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return maximum of input array ``data`` along ``axis``."""
-    return _reduce_op_array(data, np.max, MPI.MAX, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_op_array(data, np.max, MPI.MAX, *args, mpicomm=mpicomm, axis=axis, empty='use_any', **kwargs)
 
 
 @CurrentMPIComm.enable
 def cargmin(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return (local) index and rank of minimum in input array ``data`` along ``axis``."""
-    return _reduce_arg_array(data, np.argmin, MPI.MINLOC, MPI.MIN, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_arg_array(data, np.argmin, MPI.MIN, *args, mpicomm=mpicomm, empty='use_any', axis=axis, **kwargs)
 
 
 @CurrentMPIComm.enable
 def cargmax(data, *args, return_rank=False, mpicomm=None, axis=None, **kwargs):
     """Return (local) index and rank of maximum in input array ``data`` along ``axis``."""
-    return _reduce_arg_array(data, np.argmax, MPI.MAXLOC, MPI.MAX, *args, mpicomm=mpicomm, axis=axis, **kwargs)
+    return _reduce_arg_array(data, np.argmax, MPI.MAX, *args, mpicomm=mpicomm, empty='use_any', axis=axis, **kwargs)
 
 
 @CurrentMPIComm.enable
@@ -1398,12 +1460,12 @@ def csort(data, axis=-1, kind=None, mpicomm=None):
     if axis != 0:
         return toret
 
-    counts = mpicomm.allgather(len(toret))
+    size = len(toret)
     gathered = gather(toret, mpiroot=0, mpicomm=mpicomm)
     toret = None
     if mpicomm.rank == 0:
         toret = np.sort(gathered, axis=axis, kind=kind)
-    return scatter(toret, mpiroot=0, counts=counts, mpicomm=mpicomm)
+    return scatter(toret, mpiroot=0, size=size, mpicomm=mpicomm)
 
 
 @CurrentMPIComm.enable
