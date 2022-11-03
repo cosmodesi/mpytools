@@ -670,7 +670,7 @@ class BaseCatalog(BaseClass):
 
     def __repr__(self):
         """Return string representation of catalog, including global size and columns."""
-        return f'{self.__class__.__name__}(csize={self.csize:d}, size{self.size:d}, columns={self.columns()})'
+        return f'{self.__class__.__name__}(csize={self.csize:d}, size={self.size:d}, columns={self.columns()})'
 
     def __eq__(self, other):
         """Is ``self`` equal to ``other``, i.e. same type and columns? (ignoring :attr:`attrs`)"""
