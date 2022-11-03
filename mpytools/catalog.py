@@ -93,7 +93,7 @@ class BaseCatalog(BaseClass):
     """Base class that represents a catalog, as a dictionary of columns stored as arrays."""
 
     @CurrentMPIComm.enable
-    def __init__(self, data=None, columns=None, attrs=None, mpicomm=None):
+    def __init__(self, data=None, columns=None, attrs=None, mpicomm=None, **kwargs):
         """
         Initialize :class:`BaseCatalog`.
 
@@ -112,18 +112,7 @@ class BaseCatalog(BaseClass):
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
         """
-        self.data = {}
-        if isinstance(data, BaseCatalog):
-            self.__dict__.update(data.copy().__dict__)
-            return
-        if columns is None:
-            columns = list((data or {}).keys())
-        self.mpicomm = mpicomm
-        self.attrs = dict(attrs or {})
-        self.mpiroot = 0
-        if data is not None:
-            for name in columns:
-                self[name] = data[name]
+        self.__dict__.update(self.from_dict(data=data, columns=columns, attrs=attrs, mpicomm=mpicomm, **kwargs).__dict__)
 
     def is_mpi_root(self):
         """Whether current rank is root."""
@@ -148,7 +137,7 @@ class BaseCatalog(BaseClass):
         """
         if columns is None: columns = catalog.columns
         data = {col: catalog[col].compute() for col in columns}
-        return cls(data, mpicomm=catalog.comm, attrs=catalog.attrs)
+        return cls._new(data, mpicomm=catalog.comm, attrs=catalog.attrs)
 
     def to_nbodykit(self, columns=None):
         """
@@ -490,6 +479,63 @@ class BaseCatalog(BaseClass):
         new = self.cappend(self, other, **kwargs)
         self.__dict__.update(new.__dict__)
 
+    def to_dict(self, columns=None, return_type=None):
+        """
+        Return catalog as dictionary of column name: array.
+
+        Parameters
+        ----------
+        columns : list, default=None
+            Columns to use. Defaults to all catalog columns.
+
+        return_type : str, default=None
+            If ``None`` or "nparray", return dictionary of :class:`np.ndarray` instances.
+            If "mpyarray", return dictionary of :class:`mpy.array` instances.
+
+        Returns
+        -------
+        array : array
+        """
+        if columns is None:
+            columns = self.columns()
+        return {column: self.get(column, return_type=return_type) for column in columns}
+
+    @classmethod
+    @CurrentMPIComm.enable
+    def from_dict(cls, data=None, columns=None, attrs=None, mpicomm=None):
+        """
+        Construct :class:`BaseCatalog` from dictionary.
+
+        Parameters
+        ----------
+        data : dict, BaseCatalog
+            Dictionary of {name: array}.
+
+        columns : list, default=None
+            List of column names.
+            Defaults to ``data.keys()``.
+
+        attrs : dict, default=None
+            Dictionary of other attributes.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
+        """
+        self = cls.__new__(cls)
+        self.data = {}
+        if isinstance(data, BaseCatalog):
+            self.__dict__.update(data.copy().__dict__)
+            return self
+        if columns is None:
+            columns = list((data or {}).keys())
+        self.mpicomm = mpicomm
+        self.attrs = dict(attrs or {})
+        self.mpiroot = 0
+        if data is not None:
+            for name in columns:
+                self[name] = data[name]
+        return self
+
     @cast_array_wrapper
     def to_array(self, columns=None, struct=True):
         """
@@ -512,10 +558,7 @@ class BaseCatalog(BaseClass):
         -------
         array : array
         """
-        if columns is None:
-            columns = self.columns()
-        data = {column: self.get(column, return_type=None) for column in columns}
-        return _dict_to_array(data, struct=struct)
+        return _dict_to_array(self.to_dict(columns=columns, return_type=None), struct=struct)
 
     @classmethod
     @CurrentMPIComm.enable
@@ -558,7 +601,7 @@ class BaseCatalog(BaseClass):
             isstruct = mpicomm.bcast(isstruct, root=mpiroot)
             columns = mpicomm.bcast(columns, root=mpiroot)
         columns = list(columns)
-        new = cls(data=dict.fromkeys(columns), mpicomm=mpicomm, **kwargs)
+        new = cls.from_dict(mpicomm=mpicomm, **kwargs)
 
         def get(column):
             value = None
@@ -636,11 +679,6 @@ class BaseCatalog(BaseClass):
             name = [name]
             item = [item]
         name_is_columns = is_sequence(name) and all(isinstance(n, str) for n in name)
-        if name_is_columns:
-            if not is_sequence(item):
-                item = [item] * len(name)
-            elif len(item) != len(name):
-                raise ValueError('Provide as many values as columns')
         if isinstance(item, BaseCatalog):
             if name_is_columns:
                 for n in name:
@@ -649,6 +687,10 @@ class BaseCatalog(BaseClass):
                 for col, value in item.items():
                     self[col][name] = value
         elif name_is_columns:
+            if not is_sequence(item):
+                item = [item] * len(name)
+            elif len(item) != len(name):
+                raise ValueError('Provide as many values as columns')
             self.set(name, item)
         else:
             for col in self.columns():
@@ -699,7 +741,7 @@ class BaseCatalog(BaseClass):
         attrs = dict(attrs or {})
         init_kwargs = {name: kwargs.pop(name) for name in getattr(cls, '_init_kwargs', []) if name in kwargs}
         source = FileStack(*args, **kwargs)
-        new = cls(attrs=attrs, mpicomm=source.mpicomm, **init_kwargs)
+        new = cls.from_dict(attrs=attrs, mpicomm=source.mpicomm, **init_kwargs)
         new._source = source
         for column in source.columns: new.data[column] = None
         return new
@@ -819,7 +861,7 @@ class BaseCatalog(BaseClass):
         out = np.empty_like(array, shape=size)
         mpsort.sort(array, orderby=orderby, out=out)
         new = self.copy()
-        new.data = self.__class__.from_array(out, mpicomm=self.mpicomm).data
+        new.data = BaseCatalog.from_array(out, mpicomm=self.mpicomm).data
         return new
 
 

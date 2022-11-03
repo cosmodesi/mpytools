@@ -61,6 +61,7 @@ def test_scattered_source():
     assert np.allclose(source.get(local_array), carray[sl])
     assert np.allclose(source.get(local_array, slice(20, 400)), carray[20:400])
     assert np.allclose(source.get(local_array, slice(400, 20, -1)), carray[400:20:-1])
+    assert np.allclose(source.get(local_array, slice(-60, 50)), carray[-60:50])
 
 
 def test_cslice():
@@ -94,9 +95,11 @@ class FakeCatalog(Catalog):
 
     _init_kwargs = ['boxcenter']
 
-    def __init__(self, *args, boxcenter=None, **kwargs):
+    @classmethod
+    def from_dict(cls, *args, boxcenter=None, **kwargs):
+        self = super(FakeCatalog, cls).from_dict(*args, **kwargs)
         self.boxcenter = boxcenter
-        super(FakeCatalog, self).__init__(*args, **kwargs)
+        return self
 
 
 def test_io():
@@ -233,6 +236,8 @@ def test_misc():
     test = ref.copy()
     test['Z', 'RA'] = ref.ones()
     assert np.allclose(test['Z'], 1.) and not np.allclose(ref['Z'], 1.)
+    test['Z', 'RA'] = ref
+    assert np.allclose(test['RA'], ref['RA'])
     test.set(['Z', 'RA'], [ref.zeros(), ref.ones()])
     assert np.allclose(test['Z'], 0.) and np.allclose(test['RA'], 1.)
     test['Z', 'RA'][...] = ref['RA', 'Z']
