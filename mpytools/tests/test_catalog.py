@@ -83,7 +83,7 @@ def test_cslice():
         test = ref.cslice(sl)
         assert test.csize
         for name in ['RA']:
-            assert np.all(test.cget(name) == ref.cget(name)[sl])
+            assert np.all(test.cget(name, mpiroot=None) == ref.cget(name, mpiroot=None)[sl])
 
     assert np.all(ref.cindex().gather(mpiroot=None) == np.arange(ref.csize))
     for name in ['empty', 'zeros', 'ones', 'falses', 'trues', 'nans']:
@@ -126,18 +126,18 @@ def test_io():
             for ii in range(15):
                 test = Catalog.read(fn)
                 assert set(test.columns()) == set(ref.columns())
-                assert np.all(test.cget('Position') == ref.cget('Position'))
+                assert np.all(test.cget('Position', mpiroot=None) == ref.cget('Position', mpiroot=None))
                 test['Position'] += 10
             if ext == 'bigfile':
                 test.write(fns, columns=['Position', 'RA'], overwrite=True)
             else:
                 test.write(fns, columns=['Position', 'RA'])
-            assert np.allclose(test.cget('Position'), ref.cget('Position') + 10)
+            assert np.allclose(test.cget('Position', mpiroot=None), ref.cget('Position', mpiroot=None) + 10)
             test2 = Catalog.read(fns)
             assert set(test2.columns()) == set(['Position', 'RA'])  # bigfile does not conserve column order
             ref.write(fns)
             test = Catalog.read(fns)
-            assert np.all(test.cget('Position') == ref.cget('Position'))
+            assert np.all(test.cget('Position', mpiroot=None) == ref.cget('Position', mpiroot=None))
 
             def apply_slices(tmp, sls, name=None):
                 if not isinstance(sls, list): sls = [sls]
@@ -182,13 +182,13 @@ def test_io():
                         #assert test.csize
                         for name in ['Position', 'RA']:
                             #print(sls, test.cget(name).shape, apply_slices(ref.cget(name), sls).shape)
-                            assert np.all(test.cget(name) == apply_slices(ref.cget(name), sls))
+                            assert np.all(test.cget(name, mpiroot=None) == apply_slices(ref.cget(name, mpiroot=None), sls))
 
                         test = Catalog.cconcatenate(apply_slices(Catalog.read(tfn), sls, 'cslice'), apply_slices(Catalog.read(tfn), sls, 'cslice'))
                         #test = Catalog.cconcatenate(test, test)
                         for name in ['Position', 'RA']:
-                            col = apply_slices(ref.cget(name), sls)
-                            assert np.all(test.cget(name) == np.concatenate([col, col]))
+                            col = apply_slices(ref.cget(name, mpiroot=None), sls)
+                            assert np.all(test.cget(name, mpiroot=None) == np.concatenate([col, col]))
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = '_tests'
@@ -256,6 +256,10 @@ def test_misc():
     test = test.csort('rank', size='orderby_counts')
     sizes = test.mpicomm.allgather(test.size)
     assert sizes[-1] == 10
+    gathered = test.gather(mpiroot=0)
+    csize = test.csize
+    if test.mpicomm.rank == 0:
+        assert gathered.csize == gathered.size == csize
 
 
 def test_memory():

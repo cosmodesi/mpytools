@@ -311,7 +311,7 @@ class BaseCatalog(BaseClass):
             if len(value) != size:
                 raise ValueError('Catalog size is {:d}, but input column is of length {:d}'.format(size, len(value)))
 
-    def cget(self, *args, mpiroot=None, **kwargs):
+    def cget(self, *args, mpiroot=0, **kwargs):
         """
         Return on rank ``mpiroot`` catalog global column ``column`` if exists, else provided default.
         If ``mpiroot`` is ``None`` or ``Ellipsis`` result is broadcast on all processes.
@@ -322,6 +322,24 @@ class BaseCatalog(BaseClass):
             return [tt.gather(mpiroot=mpiroot) for tt in toret]
         return toret.gather(mpiroot=mpiroot)
 
+    def gather(self, mpiroot=0):
+        """
+        Return new catalog, gathered on rank ``mpiroot``.
+        If ``mpiroot`` is ``None`` or ``Ellipsis`` result is broadcast on all processes.
+        """
+        data = {column: self.cget(column, mpiroot=mpiroot) for column in self.data}
+        new = self.copy()
+        if mpiroot is None:
+            new.data = data
+            return new
+        from mpi4py import MPI
+        if self.mpicomm.rank == mpiroot:
+            new.mpicomm = MPI.COMM_SELF
+            new.data = data
+        else:
+            new = None
+        return new
+
     def slice(self, *args):
         """
         Slice catalog (locally), e.g.:
@@ -330,7 +348,7 @@ class BaseCatalog(BaseClass):
         """
         new = self.copy()
         name = Slice(*args, size=self.size).idx
-        new.data = {column: self.get(column, return_type=None)[name] for column in self.data}
+        new.data = {column: self.get(column, return_type=None)[name] if array is not None else None for column, array in self.data.items()}
         if self.has_source:
             new._source = self._source.slice(name)
         return new
