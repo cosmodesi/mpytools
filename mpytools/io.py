@@ -87,6 +87,8 @@ def _dict_to_array(data, struct=True):
 
 class FileStack(BaseClass):
 
+    _verbose_nfiles = 20
+
     @CurrentMPIComm.enable
     def __init__(self, *files, filetype=None, mpicomm=None, **kwargs):
         """
@@ -167,8 +169,13 @@ class FileStack(BaseClass):
     def header(self):
         """Full header, concatenating all file headers."""
         if getattr(self, '_header', None) is None:
+            verbose = len(self.files) < self._verbose_nfiles
+            if not verbose and self.is_mpi_root():
+                self.log_info('Reading files {} to {}.'.format(self.files[0].filename, self.files[-1].filename))
             self._header = {}
             for file in self.files:
+                if verbose and self.is_mpi_root():
+                    self.log_info('Reading {}.'.format(file.filename))
                 self._header.update(file.header)
         return self._header
 
@@ -305,6 +312,14 @@ class FileStack(BaseClass):
 
     def write(self, data, mpiroot=None, **kwargs):
         """Write data (numpy structured array or dict), optionally gathered on ``mpiroot``."""
+        nfiles = len(self.files)
+        if self.is_mpi_root():
+            if nfiles > self._verbose_nfiles:
+                self.log_info('Writing files {} to {}.'.format(self.files[0].filename, self.files[-1].filename))
+            else:
+                for file in self.files:
+                    self.log_info('Writing {}.'.format(file.filename))
+
         isdict = None
         if self.mpicomm.rank == mpiroot or mpiroot is None:
             isdict = isinstance(data, dict)
@@ -321,7 +336,6 @@ class FileStack(BaseClass):
             size = len(data)
 
         csize = self.mpicomm.allreduce(size)
-        nfiles = len(self.files)
         for ifile, file in enumerate(self.files):
             file._csize = (ifile + 1) * csize // nfiles - ifile * csize // nfiles
         fcumsizes = np.cumsum([0] + self.filesizes)
@@ -421,7 +435,6 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         # Read file header, the end user does not need to call it
         state = None
         if self.is_mpi_root():
-            self.log_info('Reading {}.'.format(self.filename))
             state = self._read_header_root()
             state['_csize'] = int(state.pop('csize'))
             state['_columns'] = list(state.pop('columns'))
@@ -498,8 +511,6 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         header : dict, default=None
             Optional header.
         """
-        if self.is_mpi_root():
-            self.log_info('Writing {}.'.format(self.filename))
         utils.mkdir(os.path.dirname(self.filename))
         isdict = isinstance(data, dict)
         if isdict:

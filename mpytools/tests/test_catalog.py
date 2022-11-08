@@ -6,6 +6,7 @@ import numpy as np
 import mpytools as mpy
 from mpytools import Catalog, setup_logging
 from mpytools.random import MPIRandomState
+from mpytools.io import FileStack
 from mpytools.core import Slice, local_size, MPIScatteredSource
 from mpytools.utils import MemoryMonitor
 
@@ -115,6 +116,8 @@ def test_io():
     rsize = csize // mpy.COMM_WORLD.size #- 1
 
     for ext in ['fits', 'npy', 'bigfile', 'asdf', 'hdf5']:
+
+        #FileStack._verbose_nfiles = 2
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_dir = '_tests'

@@ -159,12 +159,12 @@ class BaseCatalog(BaseClass):
 
     def __len__(self):
         """Return catalog (local) length (``0`` if no column)."""
+        if self.has_source:
+            return self._source.size
         keys = list(self.data.keys())
-        if not keys:
-            if self.has_source is not None:
-                return self._source.size
-            return 0
-        return len(self.get(keys[0], return_type=None))
+        if keys:
+            return len(self.get(keys[0], return_type=None))
+        return 0
 
     @property
     def size(self):
@@ -257,7 +257,12 @@ class BaseCatalog(BaseClass):
     @property
     def has_source(self):
         """Whether a "source" (typically :class:`FileStack` instance) is attached to current catalog."""
-        return getattr(self, '_source', None) is not None
+        toret = getattr(self, '_source', None) is not None
+        if toret and {key for key, value in self.data.items() if value is not None} == set(self._source.columns):
+            # We have read everything
+            toret = False
+            self._source = None
+        return toret
 
     @cast_array_wrapper
     def get(self, column, *args, **kwargs):
@@ -408,9 +413,9 @@ class BaseCatalog(BaseClass):
             if other.mpicomm is not new.mpicomm:
                 raise ValueError('Input catalogs with different mpicomm')
             if new_columns and other_columns and set(other_columns) != set(new_columns):
-                raise ValueError(f'Cannot extend samples as columns do not match: {other_columns} != {new_columns}.')
+                raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
 
-        in_data = {column: any(column in other.data for other in others) for column in new_columns}
+        in_data = {column: any(other.data[column] is not None for other in others) for column in new_columns}
 
         for column in new_columns:
             if in_data[column]:
@@ -469,7 +474,7 @@ class BaseCatalog(BaseClass):
             if new_columns and other_columns and set(other_columns) != set(new_columns):
                 raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
 
-        in_data = {column: any(column in other.data for other in others) for column in new_columns}
+        in_data = {column: any(other.data[column] is not None for other in others) for column in new_columns}
         if any(in_data.values()):
             source = []
             for other in others:
