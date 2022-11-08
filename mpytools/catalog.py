@@ -81,7 +81,10 @@ def cast_array_wrapper(func):
     """Method wrapper applying :func:`cast_array` on result."""
     @functools.wraps(func)
     def wrapper(self, *args, return_type='mpyarray', **kwargs):
-        return cast_array(func(self, *args, **kwargs), return_type=return_type, mpicomm=self.mpicomm)
+        toret = func(self, *args, **kwargs)
+        if is_sequence(toret):
+            return [cast_array(tt, return_type=return_type, mpicomm=self.mpicomm) for tt in toret]
+        return cast_array(toret, return_type=return_type, mpicomm=self.mpicomm)
 
     return wrapper
 
@@ -284,10 +287,10 @@ class BaseCatalog(BaseClass):
                 raise SyntaxError('Too many arguments!')
             has_default = True
             default = kwargs['default']
-            if not is_sequence(default):
-                default = [default] * len(column)
-            elif len(default) != len(column):
-                raise ValueError('Provide as many default values as requested columns')
+        if not is_sequence(default):
+            default = [default] * len(column)
+        elif len(default) != len(column):
+            raise ValueError('Provide as many default values as requested columns')
         toret = []
         for c, d in zip(column, default):
             if c in self.data:

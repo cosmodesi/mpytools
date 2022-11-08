@@ -263,6 +263,8 @@ def test_misc():
     csize = test.csize
     if test.mpicomm.rank == 0:
         assert gathered.csize == gathered.size == csize
+    test['ONES'] = test.get('ONES', test.ones())
+    test['A', 'B'] = test.get(['A', 'B'], [test.ones(), test.zeros()])
 
 
 def test_memory():
