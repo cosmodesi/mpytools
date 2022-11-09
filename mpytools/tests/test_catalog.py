@@ -265,6 +265,7 @@ def test_misc():
         assert gathered.csize == gathered.size == csize
     test['ONES'] = test.get('ONES', test.ones())
     test['A', 'B'] = test.get(['A', 'B'], [test.ones(), test.zeros()])
+    test['C'] = test.rng().uniform(0., 1.)
 
 
 def test_memory():

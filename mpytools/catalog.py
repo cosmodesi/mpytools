@@ -121,6 +121,14 @@ class BaseCatalog(BaseClass):
         """Whether current rank is root."""
         return self.mpicomm.rank == self.mpiroot
 
+    def rng(self, **kwargs):
+        if not kwargs and hasattr(self, '_rng'):
+            if self._rng.mpicomm is self.mpicomm and all(self.mpicomm.allgather(self._rng.size == self.size)):
+                return self._rng
+        from .random import MPIRandomState
+        self._rng = MPIRandomState(self.size, **kwargs)
+        return self._rng
+
     @classmethod
     def from_nbodykit(cls, catalog, columns=None):
         """
