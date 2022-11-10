@@ -109,13 +109,16 @@ def test_io():
     size = local_size(csize)
     rng = MPIRandomState(size, seed=42)
     ref = Catalog(data={'RA': rng.uniform(0., 1.), 'DEC': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.), 'Position': rng.uniform(0., 1., itemshape=3)})
+    ref['index'] = ref.cindex()
+    ref['mask'] = ref.falses()
+    ref['mask'][::2] = True
     mpicomm = ref.mpicomm
     assert ref.csize == csize
     ref = ref[ref['Z'] < 0.9]
     csize = ref.csize
     rsize = csize // mpy.COMM_WORLD.size #- 1
 
-    for ext in ['fits', 'npy', 'bigfile', 'asdf', 'hdf5']:
+    for ext in ['fits', 'npy', 'bigfile', 'hdf5', 'asdf'][:-1]:
 
         #FileStack._verbose_nfiles = 2
 
@@ -155,12 +158,22 @@ def test_io():
                 BaseFile._read_nslices_max = nslices_max
                 for tfn in [fn, fns]:
 
+                    test_ref, test = Catalog.read(tfn), Catalog.read(tfn)
+                    assert np.all(test[test['RA'] > 0.5]['DEC'] == test_ref['DEC'][test_ref['RA'] > 0.5])
+
+                    test_ref, test = Catalog.read(tfn), Catalog.read(tfn)
+                    assert np.all(test[test['index'] > 10]['DEC'] == test_ref['DEC'][test_ref['index'] > 10])
+
+                    test_ref, test = Catalog.read(tfn), Catalog.read(tfn)
+                    assert np.all(test[test['mask']]['DEC'] == test_ref['DEC'][test_ref['mask']])
+
                     for sls in [slice(0, rsize // 2), slice(rsize // 2, 2, -2), np.arange(1, rsize // 2, 2),
                                 np.array([1, 2, 2, 1, 3]), [slice(rsize // 2, -1, -1), slice(0, rsize * 3 // 4)],
                                 [slice(rsize // 2, 2, -2), slice(2, rsize // 4, 2)],
                                 [range(1, rsize // 2, 2), slice(rsize, 2, -2)],
                                 [np.arange(rsize // 2, 1, -2), slice(rsize, 2, -2)]]:
 
+                        test_ref = Catalog.read(tfn)
                         test = Catalog.read(tfn)
                         test['RA']
                         #print(test['RA'].size)
@@ -168,8 +181,9 @@ def test_io():
                         #assert test.csize
                         for name in ['Position', 'RA']:
                             #print(sls, test2[name].shape, apply_slices(test[name], sls).shape)
-                            assert np.all(test2[name] == apply_slices(test[name], sls))
+                            assert np.all(test2[name] == apply_slices(test_ref[name], sls))
                             test2[name].cmean()
+                        assert test == test_ref
                         assert test2 == apply_slices(test, sls, 'slice')
 
                     for sls in [slice(0, csize * 3 // 4), slice(csize * 3 // 4, 2, -1), np.arange(csize // 2, 1, -2),
@@ -179,18 +193,19 @@ def test_io():
                                 [np.arange(csize // 2, 1, -2), slice(csize, 2, -2)]]:
 
                         if not isinstance(sls, list): sls = [sls]
+                        test_ref = Catalog.read(tfn)
                         test = Catalog.read(tfn)
                         #test['RA']
                         test = apply_slices(test, sls, 'cslice')
                         #assert test.csize
                         for name in ['Position', 'RA']:
                             #print(sls, test.cget(name).shape, apply_slices(ref.cget(name), sls).shape)
-                            assert np.all(test.cget(name, mpiroot=None) == apply_slices(ref.cget(name, mpiroot=None), sls))
+                            assert np.all(test.cget(name, mpiroot=None) == apply_slices(test_ref.cget(name, mpiroot=None), sls))
 
                         test = Catalog.cconcatenate(apply_slices(Catalog.read(tfn), sls, 'cslice'), apply_slices(Catalog.read(tfn), sls, 'cslice'))
                         #test = Catalog.cconcatenate(test, test)
                         for name in ['Position', 'RA']:
-                            col = apply_slices(ref.cget(name, mpiroot=None), sls)
+                            col = apply_slices(test_ref.cget(name, mpiroot=None), sls)
                             assert np.all(test.cget(name, mpiroot=None) == np.concatenate([col, col]))
 
     with tempfile.TemporaryDirectory() as tmp_dir:

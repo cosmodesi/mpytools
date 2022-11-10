@@ -382,7 +382,7 @@ class BaseCatalog(BaseClass):
         source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
         for column in self.columns():
             if self.data[column] is not None:
-                new[column] = source.get(self.get(column, return_type=None), local_slice)
+                new.data[column] = source.get(self.get(column, return_type=None), local_slice)
         if self.has_source:
             new._source = self._source.cslice(global_slice)
         return new
