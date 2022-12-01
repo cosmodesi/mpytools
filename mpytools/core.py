@@ -1378,7 +1378,7 @@ def csum(data, *args, mpicomm=None, axis=None, **kwargs):
 
 
 @CurrentMPIComm.enable
-def cmean(data, *args, mpicomm=None, axis=-1, **kwargs):
+def cmean(data, *args, mpicomm=None, axis=None, **kwargs):
     """Return mean of array ``data`` along ``axis``."""
     if axis is None: axis = tuple(range(data.ndim))
     else: axis = normalize_axis_tuple(axis, data.ndim)
@@ -1506,13 +1506,11 @@ def caverage(a, axis=None, weights=None, returned=False, mpicomm=None):
     """
     Return weighted average of input array ``a`` along axis ``axis``.
     See :func:`numpy.average`.
-    TODO: allow several axes.
     """
     if axis is None: axis = tuple(range(a.ndim))
     else: axis = normalize_axis_tuple(axis, a.ndim)
     if 0 not in axis:
         return np.average(a, axis=axis, weights=weights, returned=returned)
-    axis = axis[0]
 
     a = np.asanyarray(a)
 
@@ -1527,44 +1525,23 @@ def caverage(a, axis=None, weights=None, returned=False, mpicomm=None):
         else:
             result_dtype = np.result_type(a.dtype, wgt.dtype)
 
-        # Sanity checks
-        if a.shape != wgt.shape:
-            if axis is None:
-                raise TypeError(
-                    "Axis must be specified when shapes of a and weights "
-                    "differ.")
-            if wgt.ndim != 1:
-                raise TypeError(
-                    "1D weights expected when shapes of a and weights differ.")
-            if wgt.shape[0] != a.shape[axis]:
-                raise ValueError(
-                    "Length of weights not compatible with specified axis.")
-
-            # setup wgt to broadcast along axis
-            wgt = np.broadcast_to(wgt, (a.ndim - 1) * (1,) + wgt.shape)
-            wgt = wgt.swapaxes(-1, axis)
-
         scl = csum(wgt, axis=axis, dtype=result_dtype)
         if np.any(scl == 0.0):
-            raise ZeroDivisionError(
-                "Weights sum to zero, can't be normalized")
+            raise ZeroDivisionError("Weights sum to zero, can't be normalized")
 
         avg = csum(np.multiply(a, wgt, dtype=result_dtype), axis=axis) / scl
 
     if returned:
-        if scl.shape != avg.shape:
-            scl = np.broadcast_to(scl, avg.shape).copy()
         return avg, scl
     else:
         return avg
 
 
 @CurrentMPIComm.enable
-def cvar(a, axis=-1, fweights=None, aweights=None, ddof=0, mpicomm=None):
+def cvar(a, axis=None, fweights=None, aweights=None, ddof=0, mpicomm=None):
     """
     Estimate variance, given data and weights.
     See :func:`numpy.var`.
-    TODO: allow several axes.
 
     Parameters
     ----------
@@ -1572,11 +1549,12 @@ def cvar(a, axis=-1, fweights=None, aweights=None, ddof=0, mpicomm=None):
         Array containing numbers whose variance is desired.
         If a is not an array, a conversion is attempted.
 
-    axis : int, default=-1
+    axis : tuple, int, default=None
         Axis along which the variance is computed.
+        Defaults to all axes.
 
     fweights : array, int, default=None
-        1D array of integer frequency weights; the number of times each
+        Array of integer frequency weights; the number of times each
         observation vector should be repeated.
 
     aweights : array, default=None
@@ -1598,34 +1576,22 @@ def cvar(a, axis=-1, fweights=None, aweights=None, ddof=0, mpicomm=None):
     out : array
         The variance of the variables.
     """
+    if axis is None: axis = tuple(range(a.ndim))
+    else: axis = normalize_axis_tuple(axis, a.ndim)
+
     X = np.array(a)
     w = None
     if fweights is not None:
         fweights = np.asarray(fweights, dtype=float)
         if not np.all(fweights == np.around(fweights)):
-            raise TypeError(
-                "fweights must be integer")
-        if fweights.ndim > 1:
-            raise RuntimeError(
-                "cannot handle multidimensional fweights")
-        if fweights.shape[0] != X.shape[axis]:
-            raise RuntimeError(
-                "incompatible numbers of samples and fweights")
+            raise TypeError('fweights must be integer')
         if any(fweights < 0):
-            raise ValueError(
-                "fweights cannot be negative")
+            raise ValueError('fweights cannot be negative')
         w = fweights
     if aweights is not None:
         aweights = np.asarray(aweights, dtype=float)
-        if aweights.ndim > 1:
-            raise RuntimeError(
-                "cannot handle multidimensional aweights")
-        if aweights.shape[0] != X.shape[axis]:
-            raise RuntimeError(
-                "incompatible numbers of samples and aweights")
         if any(aweights < 0):
-            raise ValueError(
-                "aweights cannot be negative")
+            raise ValueError('aweights cannot be negative')
         if w is None:
             w = aweights
         else:
@@ -1635,7 +1601,8 @@ def cvar(a, axis=-1, fweights=None, aweights=None, ddof=0, mpicomm=None):
 
     # Determine the normalization
     if w is None:
-        fact = cshape(a)[axis] - ddof
+        shape = cshape(a)
+        fact = np.prod([shape[ax] for ax in axis], dtype='intp') - ddof
     elif ddof == 0:
         fact = w_sum
     elif aweights is None:
@@ -1644,11 +1611,19 @@ def cvar(a, axis=-1, fweights=None, aweights=None, ddof=0, mpicomm=None):
         fact = w_sum - ddof * csum(w * aweights, axis=axis, mpicomm=mpicomm) / w_sum
 
     if fact <= 0:
-        warnings.warn("Degrees of freedom <= 0 for slice",
-                      RuntimeWarning, stacklevel=3)
+        warnings.warn('Degrees of freedom <= 0 for slice', RuntimeWarning, stacklevel=3)
         fact = 0.0
 
-    X = np.apply_along_axis(lambda x: x - avg, axis, X)
+    avg = np.atleast_1d(avg)
+    shape, iax = [], 0
+    for i in range(X.ndim):
+        if i in axis:
+            shape.append(1)
+        else:
+            shape.append(avg.shape[iax])
+            iax += 1
+    avg.shape = tuple(shape)
+    X = X - avg
     if w is None:
         X_T = X
     else:
@@ -1663,7 +1638,6 @@ def cstd(*args, **kwargs):
     """
     Return weighted standard deviation of input array along axis ``axis``.
     Simply take square root of :func:`cvar` result.
-    TODO: allow for several axes.
     """
     return np.sqrt(cvar(*args, **kwargs))
 
@@ -1757,36 +1731,29 @@ def ccov(m, y=None, ddof=1, rowvar=True, fweights=None, aweights=None, dtype=Non
     if fweights is not None:
         fweights = np.asarray(fweights, dtype=float)
         if not np.all(fweights == np.around(fweights)):
-            raise TypeError(
-                "fweights must be integer")
+            raise TypeError('fweights must be integer')
         if fweights.ndim > 1:
-            raise RuntimeError(
-                "cannot handle multidimensional fweights")
+            raise RuntimeError('cannot handle multidimensional fweights')
         if fweights.shape[0] != X.shape[1]:
-            raise RuntimeError(
-                "incompatible numbers of samples and fweights")
+            raise RuntimeError('incompatible numbers of samples and fweights')
         if any(fweights < 0):
-            raise ValueError(
-                "fweights cannot be negative")
+            raise ValueError('fweights cannot be negative')
         w = fweights
     if aweights is not None:
         aweights = np.asarray(aweights, dtype=float)
         if aweights.ndim > 1:
-            raise RuntimeError(
-                "cannot handle multidimensional aweights")
+            raise RuntimeError('cannot handle multidimensional aweights')
         if aweights.shape[0] != X.shape[1]:
-            raise RuntimeError(
-                "incompatible numbers of samples and aweights")
+            raise RuntimeError('incompatible numbers of samples and aweights')
         if any(aweights < 0):
-            raise ValueError(
-                "aweights cannot be negative")
+            raise ValueError('aweights cannot be negative')
         if w is None:
             w = aweights
         else:
             w *= aweights
 
     avg, w_sum = caverage(X.T, axis=0, weights=w, returned=True, mpicomm=mpicomm)
-    w_sum = w_sum[0]
+    #w_sum = w_sum[0]
 
     # Determine the normalization
     if w is None:

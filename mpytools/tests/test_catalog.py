@@ -281,6 +281,12 @@ def test_misc():
     test['ONES'] = test.get('ONES', test.ones())
     test['A', 'B'] = test.get(['A', 'B'], [test.ones(), test.zeros()])
     test['C'] = test.rng().uniform(0., 1.)
+    ra = rng.uniform(0., 1.)
+    ref = Catalog(data={'RA': ra.copy(), 'DEC': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.)})
+    ref[:10] = Catalog(data={name: np.ones(10, dtype='f8') for name in ['RA', 'DEC', 'Z']})
+    r = ref[-20:]
+    r[10:] = Catalog(data={name: np.ones(10, dtype='f8') for name in ['RA', 'DEC', 'Z']})
+    assert np.allclose(ref['RA'][:10], 1.) and np.allclose(ref['RA'][-10:], 1.) and np.allclose(ref['RA'][10:-10], ra[10:-10])
 
 
 def test_memory():

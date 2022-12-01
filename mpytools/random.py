@@ -10,7 +10,34 @@ from mpi4py import MPI
 from .utils import CurrentMPIComm
 
 
-__all__ = ['set_common_seed', 'bcast_seed', 'set_independent_seed', 'MPIRandomState']
+__all__ = ['bcast_seed', 'set_common_seed', 'set_independent_seed', 'MPIRandomState']
+
+
+@CurrentMPIComm.enable
+def bcast_seed(seed=None, mpicomm=None, size=None):
+    """
+    Generate array of seeds.
+
+    Parameters
+    ---------
+    seed : int, default=None
+        Random seed to use when generating seeds.
+
+    mpicomm : MPI communicator, default=None
+        Communicator to use for broadcasting. Defaults to current communicator.
+
+    size : int, default=None
+        Number of seeds to be generated.
+
+    Returns
+    -------
+    seeds : array
+        Array of seeds.
+    """
+    if mpicomm.rank == 0:
+        seeds = np.random.RandomState(seed=seed).randint(0, high=0xffffffff, size=size)
+    from . import core
+    return core.bcast(seeds if mpicomm.rank == 0 else None, mpiroot=0, mpicomm=mpicomm)
 
 
 @CurrentMPIComm.enable
@@ -39,33 +66,6 @@ def set_common_seed(seed=None, mpicomm=None):
     np.random.seed(seed)
     random.seed(seed)
     return seed
-
-
-@CurrentMPIComm.enable
-def bcast_seed(seed=None, mpicomm=None, size=None):
-    """
-    Generate array of seeds.
-
-    Parameters
-    ---------
-    seed : int, default=None
-        Random seed to use when generating seeds.
-
-    mpicomm : MPI communicator, default=None
-        Communicator to use for broadcasting. Defaults to current communicator.
-
-    size : int, default=None
-        Number of seeds to be generated.
-
-    Returns
-    -------
-    seeds : array
-        Array of seeds.
-    """
-    if mpicomm.rank == 0:
-        seeds = np.random.RandomState(seed=seed).randint(0, high=0xffffffff, size=size)
-    from . import core
-    return core.bcast(seeds if mpicomm.rank == 0 else None, mpiroot=0, mpicomm=mpicomm)
 
 
 @CurrentMPIComm.enable
@@ -173,7 +173,7 @@ class MPIRandomState(object):
         padded = []
 
         # we don't need to pad scalars,
-        # loop over broadcasted and non broadcast version to figure this out)
+        # loop over broadcasted and non broadcasted version to figure this out)
         for a, a_b in zip(r_and_args, r_and_args_b):
             if np.ndim(a) == 0:
                 # use the scalar, no need to pad.
@@ -185,25 +185,35 @@ class MPIRandomState(object):
         return padded[0], padded[1:]
 
     def poisson(self, lam, itemshape=(), dtype='f8'):
-        """Produce :attr:`size` poissons, each of shape itemshape. This is a collective MPI call. """
+        """Produce :attr:`size` poissons, each of shape itemshape. This is a collective MPI call."""
         def sampler(rng, args, size):
             lam, = args
             return rng.poisson(lam=lam, size=size)
         return self._call_rngmethod(sampler, (lam,), itemshape, dtype)
 
     def normal(self, loc=0, scale=1, itemshape=(), dtype='f8'):
-        """Produce :attr:`size` normals, each of shape itemshape. This is a collective MPI call. """
+        """Produce :attr:`size` normals, each of shape itemshape. This is a collective MPI call."""
         def sampler(rng, args, size):
             loc, scale = args
             return rng.normal(loc=loc, scale=scale, size=size)
         return self._call_rngmethod(sampler, (loc, scale), itemshape, dtype)
 
     def uniform(self, low=0., high=1.0, itemshape=(), dtype='f8'):
-        """Produce :attr:`size` uniforms, each of shape itemshape. This is a collective MPI call. """
+        """Produce :attr:`size` uniforms, each of shape itemshape. This is a collective MPI call."""
         def sampler(rng, args, size):
             low, high = args
             return rng.uniform(low=low, high=high, size=size)
         return self._call_rngmethod(sampler, (low, high), itemshape, dtype)
+
+    def choice(self, choices, itemshape=(), p=None):
+        """Produce :attr:`size` choices, each of shape itemshape. This is a collective MPI call."""
+        dtype = np.array(choices).dtype
+
+        def sampler(rng, args, size):
+            # Cannot cope with replace=False as this would be correlated
+            return rng.choice(choices, size=size, replace=True, p=p)
+
+        return self._call_rngmethod(sampler, (), itemshape, dtype)
 
     def _call_rngmethod(self, sampler, args, itemshape, dtype='f8'):
         """

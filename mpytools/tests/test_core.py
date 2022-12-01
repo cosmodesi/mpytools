@@ -47,6 +47,7 @@ def test_mpi():
 
 
 def test_array():
+
     mpicomm = mpy.COMM_WORLD
     carray = np.arange(100)
     local_array = mpy.scatter(carray, mpicomm=mpicomm, mpiroot=0)
@@ -92,6 +93,11 @@ def test_array():
     assert mpy.full(fill_value=4., cshape=10).cshape == (10,)
     assert np.array(mpi_array, copy=False, dtype='f8').dtype == np.float64
     assert np.asanyarray(mpi_array, dtype=None) is mpi_array
+
+    carray = np.arange(480).reshape(-1, 4, 3)
+    local_array = mpy.scatter(carray, mpicomm=mpicomm, mpiroot=0)
+    mpi_array = mpy.array(local_array)
+    assert np.allclose(mpy.cvar(mpi_array), np.var(carray))
 
 
 if __name__ == '__main__':

@@ -539,6 +539,7 @@ class BaseCatalog(BaseClass):
     def from_dict(cls, data=None, columns=None, attrs=None, mpicomm=None):
         """
         Construct :class:`BaseCatalog` from dictionary.
+        This is an internal method; :meth:`from_array` has more options.
 
         Parameters
         ----------
@@ -636,6 +637,8 @@ class BaseCatalog(BaseClass):
             columns = mpicomm.bcast(columns, root=mpiroot)
         columns = list(columns)
         new = cls.from_dict(mpicomm=mpicomm, **kwargs)
+        if mpiroot is not None:
+            new.mpiroot = int(mpiroot)
 
         def get(column):
             value = None
