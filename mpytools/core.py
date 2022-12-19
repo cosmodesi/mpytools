@@ -600,39 +600,39 @@ class array(np.ndarray):
         # self.value = mpsort.sort(self.value, orderby=None, comm=self.mpicomm, tuning=[])
         self.data = csort(self, axis=axis, kind=kind).data  # most naive implementation
 
-    def csum(self, axis=0, **kwargs):
+    def csum(self, axis=None, **kwargs):
         """Collective array sum along ``axis``."""
         return csum(self, axis=axis, **kwargs)
 
-    def cprod(self, axis=0, **kwargs):
+    def cprod(self, axis=None, **kwargs):
         """Collective array product along ``axis``."""
         return cprod(self, axis=axis, **kwargs)
 
-    def cmean(self, axis=0, **kwargs):
+    def cmean(self, axis=None, **kwargs):
         """Collective array mean along ``axis``."""
         return cmean(self, axis=axis, **kwargs)
 
-    def cvar(self, axis=0, **kwargs):
+    def cvar(self, axis=None, **kwargs):
         """Collective array variance along ``axis``."""
         return cvar(self, axis=axis, **kwargs)
 
-    def cstd(self, axis=0, **kwargs):
+    def cstd(self, axis=None, **kwargs):
         """Collective weighted standard deviation along axis ``axis``."""
         return cstd(self, axis=axis, **kwargs)
 
-    def cmin(self, axis=0, **kwargs):
+    def cmin(self, axis=None, **kwargs):
         """Collective minimum along ``axis``."""
         return cmin(self, axis=axis, **kwargs)
 
-    def cmax(self, axis=0, **kwargs):
+    def cmax(self, axis=None, **kwargs):
         """Collective maximum along ``axis``."""
         return cmax(self, axis=axis, **kwargs)
 
-    def cargmin(self, axis=0, **kwargs):
+    def cargmin(self, axis=None, **kwargs):
         """Local index and rank of collective minimum along ``axis``."""
         return cargmin(self, axis=axis, **kwargs)
 
-    def cargmax(self, axis=0, **kwargs):
+    def cargmax(self, axis=None, **kwargs):
         """Local index and rank of collective maximum along ``axis``."""
         return cargmax(self, axis=axis, **kwargs)
 
