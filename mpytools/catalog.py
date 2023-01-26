@@ -430,7 +430,7 @@ class BaseCatalog(BaseClass):
 
         for column in new_columns:
             if in_data[column]:
-                new[column] = np.concatenate([other.get(column, return_type=None) for other in others], axis=0)
+                new.data[column] = np.concatenate([other.get(column, return_type=None) for other in others], axis=0)
 
         source = [other._source for other in others if other.has_source]
         if source:
@@ -495,7 +495,7 @@ class BaseCatalog(BaseClass):
 
         for column in new_columns:
             if in_data[column]:
-                new[column] = source.get([other.get(column, return_type=None) for other in others])
+                new.data[column] = source.get([other.get(column, return_type=None) for other in others])
 
         source = [other._source for other in others if other.has_source]
         if source:

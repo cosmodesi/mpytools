@@ -42,21 +42,7 @@ class CurrentMPIComm(object):
     def enter(cls, mpicomm):
         """
         Enter a context where the current default MPI communicator is modified to the
-        argument `comm`. After leaving the context manager the communicator is restored.
-
-        Example:
-
-        .. code:: python
-
-            with CurrentMPIComm.enter(comm):
-                cat = UniformCatalog(...)
-
-        is identical to
-
-        .. code:: python
-
-            cat = UniformCatalog(..., comm=comm)
-
+        argument ``mpicomm``. After leaving the context manager the communicator is restored.
         """
         cls.push(mpicomm)
 

@@ -207,6 +207,7 @@ def test_io():
                         for name in ['Position', 'RA']:
                             col = apply_slices(test_ref.cget(name, mpiroot=None), sls)
                             assert np.all(test.cget(name, mpiroot=None) == np.concatenate([col, col]))
+                        assert test.cappend(test).csize == test.csize * 2
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir = '_tests'
@@ -247,6 +248,9 @@ def test_misc():
         assert getattr(ref, name)(itemshape=2).shape == (size, 2)
     test = Catalog(data=ref, columns=ref.columns())
     assert test == ref
+    test = test.append(test)
+    assert test.csize == ref.csize * 2
+    test = test.cslice(0, ref.csize)
     test = ref['Z', 'RA']
     assert test.columns() == ['Z', 'RA']
     Z, DEC = ref.get(['Z', 'DEC'])
@@ -314,7 +318,7 @@ def test_memory():
 if __name__ == '__main__':
 
     setup_logging()
-
+    
     test_slice()
     test_scattered_source()
     test_cslice()
