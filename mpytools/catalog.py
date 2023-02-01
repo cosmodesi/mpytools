@@ -443,11 +443,6 @@ class BaseCatalog(BaseClass):
         """(Locally) append ``other`` to current catalog."""
         return self.concatenate(self, other, **kwargs)
 
-    def extend(self, other, **kwargs):
-        """(Locally) extend (in-place) current catalog with ``other``."""
-        new = self.append(self, other, **kwargs)
-        self.__dict__.update(new.__dict__)
-
     @classmethod
     def cconcatenate(cls, *others):
         """
@@ -507,11 +502,6 @@ class BaseCatalog(BaseClass):
     def cappend(self, other, **kwargs):
         """(Collectively) append ``other`` to current catalog."""
         return self.cconcatenate(self, other, **kwargs)
-
-    def cextend(self, other, **kwargs):
-        """(Collectively) extend (in-place) current catalog with ``other``."""
-        new = self.cappend(self, other, **kwargs)
-        self.__dict__.update(new.__dict__)
 
     def to_dict(self, columns=None, return_type=None):
         """
