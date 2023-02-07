@@ -69,7 +69,7 @@ def test_array():
     assert np.allclose(mpi_array.gather(mpiroot=None), carray)
 
     mpi_array2 = mpi_array.copy()
-    if mpicomm.rank == 1: mpi_array2 = mpi_array2[:0]
+    if mpicomm.rank > 0: mpi_array2 = mpi_array2[:0]
     carray2 = mpi_array2.gather(mpiroot=None)
 
     for mpi_array, carray in zip([mpi_array2, mpi_array], [carray2, carray]):

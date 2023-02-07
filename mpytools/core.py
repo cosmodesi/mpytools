@@ -1261,11 +1261,10 @@ def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, empty=No
         if any(emptys):
             if all(emptys): raise ValueError('empty array on all ranks')
             for source, empty in enumerate(emptys):
-                if not empty:
-                    if mpicomm.rank == source:
-                        for dest, empty in enumerate(emptys):
-                            if empty: send(toret, dest=dest, mpicomm=mpicomm)
-                break
+                if not empty: break
+            if mpicomm.rank == source:
+                for dest, empty in enumerate(emptys):
+                    if empty: send(toret, dest=dest, mpicomm=mpicomm)
             if emptys[mpicomm.rank]:
                 toret = recv(source=source, mpicomm=mpicomm)
     else:
@@ -1333,11 +1332,10 @@ def _reduce_arg_array(data, npop, mpiop, *args, mpicomm=None, axis=None, empty=N
         if any(emptys):
             if all(emptys): raise ValueError('empty array on all ranks')
             for source, empty in enumerate(emptys):
-                if not empty:
-                    if mpicomm.rank == source:
-                        for dest, empty in enumerate(emptys):
-                            if empty: send(val, dest=dest, mpicomm=mpicomm)
-                    break
+                if not empty: break
+            if mpicomm.rank == source:
+                for dest, empty in enumerate(emptys):
+                    if empty: send(val, dest=dest, mpicomm=mpicomm)
             if emptys[mpicomm.rank]:
                 val = recv(source=source, mpicomm=mpicomm)
     # could not find out how to do mpicomm.Allreduce([tmp, MPI.INT_INT], [total, MPI.INT_INT], op=MPI.MINLOC) for e.g. (double, int)...
