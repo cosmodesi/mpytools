@@ -1254,6 +1254,7 @@ def _reduce_op_array(data, npop, mpiop, *args, mpicomm=None, axis=None, empty=No
         If ``0`` in ``axis``, result is broadcast on all ranks.
         Else, result is local.
     """
+    data = np.asarray(data)
     if empty == 'use_any':
         toret = None
         if data.size: toret = npop(data, *args, axis=axis, **kwargs)
@@ -1313,6 +1314,7 @@ def _reduce_arg_array(data, npop, mpiop, *args, mpicomm=None, axis=None, empty=N
         If ``0`` in ``axis``, rank where index resides in.
         Else, ``None``.
     """
+    data = np.asarray(data)
     if empty == 'use_any':
         arg = None
         if data.size: arg = npop(data, *args, axis=axis, **kwargs)
