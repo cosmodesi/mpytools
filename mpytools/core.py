@@ -77,7 +77,8 @@ class Slice(BaseClass):
             if not (np.issubdtype(sl.dtype, np.integer) or sl.dtype == '?'):
                 raise ValueError('If array, must be of integer or boolean type')
             if sl.dtype == '?':
-                sl = np.flatnonzero(sl)
+                if sl.all(): sl = slice(0, sl.size, 1)
+                else: sl = np.flatnonzero(sl)
         self.idx = sl
 
     @property
@@ -103,9 +104,12 @@ class Slice(BaseClass):
         return np.arange(self.idx.start, self.idx.stop, self.idx.step)
 
     def nslices(self):
-        if self.is_array:
-            return 1 + np.sum(np.diff(np.diff(self.idx)) != 0)
-        return 1
+        if getattr(self, '_nslices', None) is None:
+            if self.is_array:
+                self._nslices = 1 + np.sum(np.diff(np.diff(self.idx)) != 0)
+            else:
+                self._nslices = 1
+        return self._nslices 
 
     def to_slices(self):
         """Turn :class:`Slice` into a list of python slices."""

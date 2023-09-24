@@ -603,7 +603,11 @@ class FitsFile(BaseFile):
             return {'csize': file.get_nrows(), 'columns': file.get_rec_dtype()[0].names, 'header': dict(file.read_header()), 'ext': self.ext}
 
     def _read_rows(self, column, rows):
-        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=range(rows.start, rows.stop))
+        if rows.stop - rows.start == self.csize:
+            rows = None
+        else:
+            rows = range(rows.start, rows.stop)
+        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=rows)
 
     def _write_data(self, data, header):
         data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
