@@ -299,11 +299,17 @@ class BaseCatalog(BaseClass):
             default = [default] * len(column)
         elif len(default) != len(column):
             raise ValueError('Provide as many default values as requested columns')
+        read = []
+        for c in column:
+            if c in self.data and self.data[c] is None:
+                read.append(c)
+        if read:
+            arrays = self.source.read(read)  # may be faster, for e.g. fits
+            for c, array in zip(read, arrays):
+                self.data[c] = array
         toret = []
         for c, d in zip(column, default):
             if c in self.data:
-                if self.data[c] is None:
-                    self.data[c] = self.source.read(c)
                 toret.append(self.data[c])
             elif has_default:
                 toret.append(d)
@@ -388,7 +394,7 @@ class BaseCatalog(BaseClass):
         return new
 
     @classmethod
-    def concatenate(cls, *others):
+    def concatenate(cls, *others, intersection=False):
         """
         Concatenate catalogs together, locally:
         no data is exchanged between processes, but order is not preserved,
@@ -398,6 +404,10 @@ class BaseCatalog(BaseClass):
         ----------
         others : list
             List of :class:`BaseCatalog` instances.
+
+        intersection : bool, default=False
+            If ``True``, restrict to columns that are in all input catalogs.
+            Else, if input catalogs have different columns, a :class:`ValueError` will be raised.
 
         Returns
         -------
@@ -417,14 +427,21 @@ class BaseCatalog(BaseClass):
 
         new = others[0].copy()
         new.attrs = attrs
-        new_columns = new.columns()
 
         for other in others:
-            other_columns = other.columns()
             if other.mpicomm is not new.mpicomm:
                 raise ValueError('Input catalogs with different mpicomm')
-            if new_columns and other_columns and set(other_columns) != set(new_columns):
-                raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
+
+        new_columns = new.columns()
+
+        if intersection:
+            for other in others:
+                new_columns = [column for column in new_columns if column in other.columns()]
+        else:
+            for other in others:
+                other_columns = other.columns()
+                if new_columns and other_columns and set(other_columns) != set(new_columns):
+                    raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
 
         in_data = {column: any(other.data[column] is not None for other in others) for column in new_columns}
 
@@ -444,7 +461,7 @@ class BaseCatalog(BaseClass):
         return self.concatenate(self, other, **kwargs)
 
     @classmethod
-    def cconcatenate(cls, *others):
+    def cconcatenate(cls, *others, intersection=False):
         """
         Concatenate catalogs together, preserving global order.
 
@@ -452,6 +469,10 @@ class BaseCatalog(BaseClass):
         ----------
         others : list
             List of :class:`BaseCatalog` instances.
+
+        intersection : bool, default=False
+            If ``True``, restrict to columns that are in all input catalogs.
+            Else, if input catalogs have different columns, a :class:`ValueError` will be raised.
 
         Returns
         -------
@@ -471,14 +492,21 @@ class BaseCatalog(BaseClass):
 
         new = others[0].copy()
         new.attrs = attrs
-        new_columns = new.columns()
 
         for other in others:
-            other_columns = other.columns()
             if other.mpicomm is not new.mpicomm:
                 raise ValueError('Input catalogs with different mpicomm')
-            if new_columns and other_columns and set(other_columns) != set(new_columns):
-                raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
+
+        new_columns = new.columns()
+
+        if intersection:
+            for other in others:
+                new_columns = [column for column in new_columns if column in other.columns()]
+        else:
+            for other in others:
+                other_columns = other.columns()
+                if new_columns and other_columns and set(other_columns) != set(new_columns):
+                    raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
 
         in_data = {column: any(other.data[column] is not None for other in others) for column in new_columns}
         if any(in_data.values()):

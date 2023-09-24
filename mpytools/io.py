@@ -295,20 +295,29 @@ class FileStack(BaseClass):
         new = self.cappend(self, other, **kwargs)
         self.__dict__.update(new.__dict__)
 
-    def read(self, column):
-        """Read column of name ``column``."""
-        toret = []
+    def read(self, columns):
+        """Read column(s) of name ``columns``."""
+        isscalar = isinstance(columns, str)
+        if isscalar: columns = [columns]
+        toret = [[] for column in columns]
         for islice, slices in enumerate(self.fileslices(return_index=True)):
             tmp, idx = [], []
             for ifile, (rows, iidx) in enumerate(slices):
-                tmp.append(self.files[ifile].read(column, rows=rows))
+                tmp.append(self.files[ifile].read(columns, rows=rows))
                 idx.append(iidx.idx)
             if self.slices[islice].is_array:
-                toret.append(np.concatenate(tmp, axis=0, dtype=tmp[0].dtype)[np.argsort(np.concatenate(idx, axis=0))])
+                sidx = np.argsort(np.concatenate(idx, axis=0))
+                for icol in range(len(columns)):
+                    toret[icol].append(np.concatenate([tt[icol] for tt in tmp], axis=0, dtype=tmp[0][icol].dtype)[sidx])
             else:
-                toret += [tmp[ii] for ii in np.argsort([iidx.start for iidx in idx])]
-        tmp = np.concatenate(toret, axis=0, dtype=toret[0].dtype)
-        return tmp
+                sidx = np.argsort([iidx.start for iidx in idx])
+                for icol in range(len(columns)):
+                    toret[icol] += [tmp[ii][icol] for ii in sidx]
+        for icol, tt in enumerate(toret):
+            toret[icol] = np.concatenate(tt, axis=0, dtype=tt[0].dtype)
+        if isscalar:
+            return toret[0]
+        return toret
 
     def write(self, data, mpiroot=None, **kwargs):
         """Write data (numpy structured array or dict), optionally gathered on ``mpiroot``."""
@@ -464,8 +473,11 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
             self._read_header()
         return self._header
 
-    def read(self, column, rows=slice(None)):
+    def read(self, columns, rows=slice(None)):
         """Read input ``rows`` of column name ``column``."""
+        isscalar = isinstance(columns, str)
+        if isscalar: columns = [columns]
+        toret = [[] for column in columns]
         sl = Slice(rows, size=self.csize)
         rows, idxs = [sl.idx], None
         if sl.is_array:
@@ -479,7 +491,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         else:
             if 'slice' not in self._type_read_rows:
                 rows = [sl.to_array()]
-        toret = []
+        toret = [[] for icol in range(len(columns))]
         for irow, row in enumerate(rows):
             idx = None
             if idxs is not None: idx = idxs[irow]
@@ -494,10 +506,15 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
                 elif row.step < 0 and 'islice' not in self._type_read_rows:
                     row = slice(start, stop, abs(step))
                     idx = slice(None, None, -1)
-            tmp = self._read_rows(column, rows=row)
-            if idx is not None: tmp = tmp[idx]
-            toret.append(tmp)
-        return np.concatenate(toret, axis=0, dtype=toret[0].dtype)
+            tmp = self._read_rows(columns, rows=row)
+            if idx is not None: tmp = [tt[idx] for tt in tmp]
+            for icol in range(len(columns)):
+                toret[icol].append(tmp[icol])
+        for icol, tt in enumerate(toret):
+            toret[icol] = np.concatenate(tt, axis=0, dtype=tt[0].dtype)
+        if isscalar:
+            return toret[0]
+        return toret
 
     def write(self, data, header=None, **kwargs):
         """
@@ -530,7 +547,7 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         # (optionally) other attributes
         raise NotImplementedError
 
-    def _read_rows(self, column, rows):
+    def _read_rows(self, columns, rows):
         raise NotImplementedError
 
     def _write_data(self, data, header):
@@ -602,12 +619,17 @@ class FitsFile(BaseFile):
                 raise IOError('{} extension {} is not a readable binary table'.format(self.filename, self.ext))
             return {'csize': file.get_nrows(), 'columns': file.get_rec_dtype()[0].names, 'header': dict(file.read_header()), 'ext': self.ext}
 
-    def _read_rows(self, column, rows):
+    def _read_rows(self, columns, rows):
         if rows.stop - rows.start == self.csize:
             rows = None
         else:
             rows = range(rows.start, rows.stop)
-        return fitsio.read(self.filename, ext=self.ext, columns=column, rows=rows)
+        if set(columns) == set(self._columns):
+            cols = None
+        else:
+            cols = columns
+        toret = fitsio.read(self.filename, ext=self.ext, columns=cols, rows=rows)
+        return [toret[column] for column in columns]
 
     def _write_data(self, data, header):
         data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
@@ -672,13 +694,13 @@ class HDF5File(BaseFile):
                     raise IOError('Column {} has different length (expected {:d}, found {:d})'.format(name, size, grp[name].shape[0]))
             return {'csize': size, 'columns': columns, 'header': dict(grp.attrs)}
 
-    def _read_rows(self, column, rows):
+    def _read_rows(self, columns, rows):
         with h5py.File(self.filename, 'r') as file:
             grp = file[self.group]
             if isinstance(rows, slice):
-                return grp[column][rows]
+                return [grp[column][rows] for column in columns]
             rows, inverse = np.unique(rows, return_inverse=True)
-            return grp[column][rows][inverse]
+            return [grp[column][rows][inverse] for column in columns]
 
     def _write_data(self, data, header):
         driver = 'mpio'
@@ -735,8 +757,9 @@ class BinaryFile(BaseFile):
         array = open_memmap(self.filename, mode='r')
         return {'csize': len(array), 'columns': array.dtype.names, 'header': {}}
 
-    def _read_rows(self, column, rows):
-        return open_memmap(self.filename, mode='r')[rows][column]
+    def _read_rows(self, columns, rows):
+        toret = open_memmap(self.filename, mode='r')[rows]
+        return [toret[column] for column in columns]
 
     def _write_data(self, data, header):
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(len(data)))
@@ -833,9 +856,10 @@ class BigFile(BaseFile):
                         attrs[key] = np.array(value, copy=True)
             return {'csize': csize, 'columns': columns, 'header': attrs}
 
-    def _read_rows(self, column, rows):
+    def _read_rows(self, columns, rows):
         with bigfile.File(filename=self.filename)[self.group] as file:
-            return bigfile.Dataset(file, [column])[column][rows]
+            d = bigfile.Dataset(file, columns)
+            return [d[column][rows] for column in columns]
 
     def _write_data(self, data, header, overwrite=None):
         columns = list(data.keys())
@@ -1009,10 +1033,10 @@ class AsdfFile(BaseFile):
                         attrs[key] = np.array(value, copy=True)
             return {'csize': csize, 'columns': columns, 'header': attrs}
 
-    def _read_rows(self, column, rows):
+    def _read_rows(self, columns, rows):
         with asdf.open(self.filename) as file:
             file = file[self.group] if self.group else file
-            return np.array(file[column][rows], copy=True)  # otherwise, segfault due to memorymap
+            return [np.array(file[column][rows], copy=True) for column in columns] # otherwise, segfault due to memorymap
 
     def _write_data(self, data, header):
         data = {key: mpy.gather(data[key], mpicomm=self.mpicomm, mpiroot=self.mpiroot) for key in data}

@@ -145,6 +145,9 @@ def test_io():
             test = Catalog.read(fns)
             assert np.all(test.cget('Position', mpiroot=None) == ref.cget('Position', mpiroot=None))
 
+            test = Catalog.read(fns)
+            test.get(test.columns())
+
             def apply_slices(tmp, sls, name=None):
                 if not isinstance(sls, list): sls = [sls]
                 if name is None:
@@ -291,6 +294,14 @@ def test_misc():
     r = ref[-20:]
     r[10:] = Catalog(data={name: np.ones(10, dtype='f8') for name in ['RA', 'DEC', 'Z']})
     assert np.allclose(ref['RA'][:10], 1.) and np.allclose(ref['RA'][-10:], 1.) and np.allclose(ref['RA'][10:-10], ra[10:-10])
+    for func in [Catalog.concatenate, Catalog.cconcatenate]:
+        try:
+            func(ref, ref[['RA']])
+        except ValueError:
+            pass
+        else:
+            raise ValueError('A ValueError should have been raised')
+        func(ref, ref[['RA']], intersection=True)
 
 
 def test_memory():
@@ -318,7 +329,7 @@ def test_memory():
 if __name__ == '__main__':
 
     setup_logging()
-    
+
     test_slice()
     test_scattered_source()
     test_cslice()
