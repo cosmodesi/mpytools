@@ -117,10 +117,6 @@ class BaseCatalog(BaseClass):
         """
         self.__dict__.update(self.from_dict(data=data, columns=columns, attrs=attrs, mpicomm=mpicomm, **kwargs).__dict__)
 
-    def is_mpi_root(self):
-        """Whether current rank is root."""
-        return self.mpicomm.rank == self.mpiroot
-
     def rng(self, **kwargs):
         if not kwargs and hasattr(self, '_rng'):
             if self._rng.mpicomm is self.mpicomm and all(self.mpicomm.allgather(self._rng.size == self.size)):
@@ -349,7 +345,8 @@ class BaseCatalog(BaseClass):
         Return new catalog, gathered on rank ``mpiroot``.
         If ``mpiroot`` is ``None`` or ``Ellipsis`` result is broadcast on all processes.
         """
-        data = {column: self.cget(column, mpiroot=mpiroot) for column in self.data}
+        columns = self.columns()
+        data = dict(zip(columns, self.cget(columns, mpiroot=mpiroot)))
         new = self.copy()
         if mpiroot is None:
             new.data = data
@@ -370,7 +367,7 @@ class BaseCatalog(BaseClass):
         """
         new = self.copy()
         name = Slice(*args, size=self.size).idx
-        new.data = {column: self.get(column, return_type=None)[name] if array is not None else None for column, array in self.data.items()}
+        new.data = {column: array[name] if array is not None else None for column, array in self.data.items()}
         if self.has_source:
             new._source = self._source.slice(name)
         return new
@@ -385,10 +382,11 @@ class BaseCatalog(BaseClass):
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
         global_slice = Slice(*args, size=cumsizes[-1])
         local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
-        source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
-        for column in self.columns():
-            if self.data[column] is not None:
-                new.data[column] = source.get(self.get(column, return_type=None), local_slice)
+        in_data = [column for column in self.data if self.data[column] is not None]
+        if in_data:
+            source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
+            for column, array in zip(in_data, self.get(in_data, return_type=None)):
+                new.data[column] = source.get(array, local_slice)
         if self.has_source:
             new._source = self._source.cslice(global_slice)
         return new
@@ -443,11 +441,11 @@ class BaseCatalog(BaseClass):
                 if new_columns and other_columns and set(other_columns) != set(new_columns):
                     raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
 
-        in_data = {column: any(other.data[column] is not None for other in others) for column in new_columns}
-
-        for column in new_columns:
-            if in_data[column]:
-                new.data[column] = np.concatenate([other.get(column, return_type=None) for other in others], axis=0)
+        in_data = [column for column in new_columns if any(other.data[column] is not None for other in others)]
+        if in_data:
+            arrays = zip(*[other.get(in_data, return_type=None) for other in others])
+            for column, arrays in zip(in_data, arrays):
+                new.data[column] = np.concatenate(arrays, axis=0)
 
         source = [other._source for other in others if other.has_source]
         if source:
@@ -508,17 +506,16 @@ class BaseCatalog(BaseClass):
                 if new_columns and other_columns and set(other_columns) != set(new_columns):
                     raise ValueError(f'Cannot concatenate catalogs as columns do not match: {other_columns} != {new_columns}.')
 
-        in_data = {column: any(other.data[column] is not None for other in others) for column in new_columns}
-        if any(in_data.values()):
+        in_data = [column for column in new_columns if any(other.data[column] is not None for other in others)]
+        if in_data:
             source = []
             for other in others:
                 cumsizes = np.cumsum([0] + other.mpicomm.allgather(other.size))
                 source.append(MPIScatteredSource(slice(cumsizes[other.mpicomm.rank], cumsizes[other.mpicomm.rank + 1], 1)))
             source = MPIScatteredSource.cconcatenate(*source)
-
-        for column in new_columns:
-            if in_data[column]:
-                new.data[column] = source.get([other.get(column, return_type=None) for other in others])
+            arrays = zip(*[other.get(in_data, return_type=None) for other in others])
+            for column, arrays in zip(in_data, arrays):
+                new.data[column] = source.get(arrays)
 
         source = [other._source for other in others if other.has_source]
         if source:
@@ -550,7 +547,7 @@ class BaseCatalog(BaseClass):
         """
         if columns is None:
             columns = self.columns()
-        return {column: self.get(column, return_type=return_type) for column in columns}
+        return dict(zip(columns, self.get(columns, return_type=return_type)))
 
     @classmethod
     @CurrentMPIComm.enable
@@ -583,7 +580,6 @@ class BaseCatalog(BaseClass):
             columns = list((data or {}).keys())
         self.mpicomm = mpicomm
         self.attrs = dict(attrs or {})
-        self.mpiroot = 0
         if data is not None:
             for name in columns:
                 self[name] = data[name]
@@ -685,7 +681,7 @@ class BaseCatalog(BaseClass):
     def deepcopy(self):
         """Deep copy."""
         new = self.copy()
-        new.data = {column: self.get(column, return_type='nparray').copy() for column in new.data}
+        new.data = {column: array.copy() if array is not None else None for column, array in self.data.items()}
         import copy
         for name in self._attrs:
             if hasattr(self, name): setattr(new, name, copy.deepcopy(getattr(self, name)))
@@ -779,9 +775,7 @@ class BaseCatalog(BaseClass):
             return False
         assert self.mpicomm == other.mpicomm
         self, other = self.cslice(0, None), other.cslice(0, None)  # make sure we have the same size on each rank
-        for col in self_columns:
-            self_value = self.get(col)
-            other_value = other.get(col)
+        for self_value, other_value in zip(self.get(self_columns), other.get(self_columns)):
             if not all(self.mpicomm.allgather(np.all(self_value == other_value))):
                 return False
         return True
@@ -813,9 +807,7 @@ class BaseCatalog(BaseClass):
             Columns to write. Defaults to all columns.
         """
         source = FileStack(*args, **kwargs)
-        if columns is None:
-            columns = self.columns()
-        source.write({column: self.get(column, return_type='nparray') for column in columns}, header=header)
+        source.write(self.to_dict(columns=columns, return_type='nparray'), header=header)
 
     @classmethod
     @CurrentMPIComm.enable
@@ -865,14 +857,14 @@ class BaseCatalog(BaseClass):
         -------
         All data will be gathered on a single process, which may cause out-of-memory errors.
         """
-        if self.is_mpi_root():
+        if self.mpicomm.rank == 0:
             self.log_info(f'Saving to {filename}.')
             utils.mkdir(os.path.dirname(filename))
         state = self.__getstate__()
         if columns is None:
             columns = self.columns()
-        state['data'] = {name: self.cget(name, mpiroot=self.mpiroot) for name in columns}
-        if self.is_mpi_root():
+        state['data'] = dict(zip(columns, self.cget(columns, mpiroot=0)))
+        if self.mpicomm.rank == 0:
             np.save(filename, state, allow_pickle=True)
 
     def csort(self, orderby, size=None):
