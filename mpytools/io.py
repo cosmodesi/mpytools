@@ -763,7 +763,7 @@ class BinaryFile(BaseFile):
 
     def _read_rows(self, columns, rows):
         toret = open_memmap(self.filename, mode='r')[rows]
-        return [toret[column] for column in columns]
+        return [np.array(toret[column]) for column in columns]
 
     def _write_data(self, data, header):
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(len(data)))

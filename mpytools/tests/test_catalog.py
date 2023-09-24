@@ -122,6 +122,7 @@ def test_io():
 
         #FileStack._verbose_nfiles = 2
 
+        print(ext)
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_dir = '_tests'
             fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.{}'.format(ext)), root=0)
