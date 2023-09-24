@@ -314,7 +314,9 @@ class FileStack(BaseClass):
                 for icol in range(len(columns)):
                     toret[icol] += [tmp[ii][icol] for ii in sidx]
         for icol, tt in enumerate(toret):
-            toret[icol] = np.concatenate(tt, axis=0, dtype=tt[0].dtype)
+            # To save some time
+            if len(tt) > 1: toret[icol] = np.concatenate(tt, axis=0, dtype=tt[0].dtype)
+            else: toret[icol] = tt[0]
         if isscalar:
             return toret[0]
         return toret
@@ -511,7 +513,9 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
             for icol in range(len(columns)):
                 toret[icol].append(tmp[icol])
         for icol, tt in enumerate(toret):
-            toret[icol] = np.concatenate(tt, axis=0, dtype=tt[0].dtype)
+            # To save some time
+            if len(tt) > 1: toret[icol] = np.concatenate(tt, axis=0, dtype=tt[0].dtype)
+            else: toret[icol] = tt[0]
         if isscalar:
             return toret[0]
         return toret
