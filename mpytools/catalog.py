@@ -806,7 +806,7 @@ class BaseCatalog(BaseClass):
         columns : list, default=None
             Columns to write. Defaults to all columns.
         """
-        source = FileStack(*args, **kwargs)
+        source = FileStack(*args, mpicomm=self.mpicomm, **kwargs)
         source.write(self.to_dict(columns=columns, return_type='nparray'), header=header)
 
     @classmethod

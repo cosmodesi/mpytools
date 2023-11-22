@@ -127,6 +127,12 @@ def test_io():
             tmp_dir = '_tests'
             fn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp.{}'.format(ext)), root=0)
             ref.write(fn)
+            bref = ref.gather(mpiroot=0)
+            bfn = mpicomm.bcast(os.path.join(tmp_dir, 'tmp2.{}'.format(ext)), root=0)
+            if bref is not None:
+                bref.write(bfn)
+            mpicomm.Barrier()
+            bref = Catalog.read(bfn)
             fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.{}'.format(i, ext)), root=0) for i in range(4)]
             ref.write(fns)
 
