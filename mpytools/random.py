@@ -205,7 +205,7 @@ class MPIRandomState(object):
             return rng.uniform(low=low, high=high, size=size)
         return self._call_rngmethod(sampler, (low, high), itemshape, dtype)
 
-    def randint(self, low=0, high=10, itemshape=(), dtype='f8'):
+    def randint(self, low=0, high=10, itemshape=(), dtype='int'):
         """Produce :attr:`size` randint, each of shape itemshape. This is a collective MPI call."""
         def sampler(rng, args, size):
             low, high = args
