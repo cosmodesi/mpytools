@@ -49,6 +49,8 @@ class Slice(BaseClass):
             sl = slice(*args)
         else:
             sl = args[0]
+        if sl is Ellipsis:
+            sl = slice(None)
         if isinstance(sl, self.__class__):
             self.__dict__.update(sl.__dict__)
             if self.is_array: self.idx = np.array(self.idx, copy=copy)
@@ -109,7 +111,7 @@ class Slice(BaseClass):
                 self._nslices = 1 + np.sum(np.diff(np.diff(self.idx)) != 0)
             else:
                 self._nslices = 1
-        return self._nslices 
+        return self._nslices
 
     def to_slices(self):
         """Turn :class:`Slice` into a list of python slices."""
