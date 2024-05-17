@@ -163,7 +163,10 @@ class FileStack(BaseClass):
         return self._columns
 
     def __delitem__(self, name):
-        self.columns.remove(name)
+        try:
+            self.columns.remove(name)
+        except ValueError:
+            raise KeyError('f{name} not found')
 
     @property
     def header(self):
