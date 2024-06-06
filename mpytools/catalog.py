@@ -909,8 +909,20 @@ class BaseCatalog(BaseClass):
         mpsort.sort(array, orderby=orderby, out=out)
         new = self.copy()
         new.data = BaseCatalog.from_array(out, mpicomm=self.mpicomm).data
+        
         return new
 
+    def balance_across_rank(self):
+        """
+        Return new catalog with roughly similar size on each rank. mpicomm not expected to be None.
+        Note: In specific case, can produce unbalanced catalog (typically, when size < mpicomm.size ..)
+        """
+
+        self['index'] = np.arange(self.size) % self.mpicomm.size
+        new = self.csort('index', size='orderby_counts')
+        new.__delitem__('index')
+        
+        return new
 
 class Catalog(BaseCatalog):
 
