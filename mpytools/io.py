@@ -204,44 +204,38 @@ class FileStack(BaseClass):
         """Collective size of columns to be read."""
         return self.mpicomm.allreduce(self.size)
 
-    @property
-    def _is_slice_array(self):
-        # Is any of slices an index array?
-        return any(utils.list_concatenate(self.mpicomm.allgather([sl.is_array for sl in self.slices])))
-
     def slice(self, *args):
         """Slice :class:`FileStack` (locally), i.e. select local rows to read."""
         new = self.copy()
-        sl = Slice(*args)
-        new._slices = [sli.slice(sl) for sli in self.slices]
+        local_slice = Slice(*args)
+        assert (not local_slice.is_array), 'General array indexing not supported'
+        tmp = [sli.slice(local_slice) for sli in self.slices]
+        if local_slice.idx.step < 0:
+            tmp = tmp[::-1]
+        new._slices = Slice.snap(*tmp)
         return new
 
     def cslice(self, *args):
         """Slice :class:`FileStack` (collectively), i.e. select global rows to read."""
         new = self.copy()
         global_slice = Slice(*args, size=self.csize)
+        assert (not global_slice.is_array), 'General array indexing not supported'
         local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
         #print(self.mpicomm.rank, local_slice)
-        if local_slice.is_array or self._is_slice_array:
-            cumsizes = np.cumsum([sum(self.mpicomm.allgather(self.size)[:self.mpicomm.rank])] + [sl.size for sl in self.slices])
-            slices = [slice(size1, size2, 1) for size1, size2 in zip(cumsizes[:-1], cumsizes[1:])]
-            source = MPIScatteredSource(*slices)
-            new._slices = [Slice(source.get([sl.to_array() for sl in self._slices], local_slice))]
-        else:
-            all_slices = utils.list_concatenate(self.mpicomm.allgather(self.slices))
-            tmp = []
-            cumsize = 0
-            for sli in all_slices:
-                #self_slice_in_irank = sli.slice(local_slice.shift(-cumsize), return_index=False)
-                #print(self.mpicomm.rank, local_slice, local_slice.shift(-cumsize), sli, sli.size, self_slice_in_irank, '\n')
-                self_slice_in_irank = sli.slice(Slice(cumsize, cumsize + sli.size).find(local_slice), return_index=False)
-                #print(self.mpicomm.rank, local_slice, sli, sli.size, self_slice_in_irank, '\n')
-                if self_slice_in_irank: tmp.append(self_slice_in_irank)
-                cumsize += sli.size
-            if local_slice.idx.step < 0:
-                tmp = tmp[::-1]
-            new._slices = Slice.snap(*tmp)
-            #print(self.mpicomm.rank, new._slices)
+        all_slices = utils.list_concatenate(self.mpicomm.allgather(self.slices))
+        tmp = []
+        cumsize = 0
+        for sli in all_slices:
+            #self_slice_in_irank = sli.slice(local_slice.shift(-cumsize), return_index=False)
+            #print(self.mpicomm.rank, local_slice, local_slice.shift(-cumsize), sli, sli.size, self_slice_in_irank, '\n')
+            self_slice_in_irank = sli.slice(Slice(cumsize, cumsize + sli.size).find(local_slice), return_index=False)
+            #print(self.mpicomm.rank, local_slice, sli, sli.size, self_slice_in_irank, '\n')
+            if self_slice_in_irank: tmp.append(self_slice_in_irank)
+            cumsize += sli.size
+        if local_slice.idx.step < 0:
+            tmp = tmp[::-1]
+        new._slices = Slice.snap(*tmp)
+        #print(self.mpicomm.rank, new._slices)
         return new
 
     @classmethod
@@ -270,23 +264,12 @@ class FileStack(BaseClass):
         """Concatenate :class:`FileStack` collectively, such that global order is preserved."""
         new = cls(*utils.list_concatenate([other.files for other in others]))
         if any(getattr(other, '_slices', None) is not None for other in others):
-            if any(other._is_slice_array for other in others):
-                csize = sum(other.csize for other in others)
-                new_slice = Slice(new.mpicomm.rank * csize // new.mpicomm.size, (new.mpicomm.rank + 1) * csize // new.mpicomm.size, 1)
-                source = []
-                for other in others:
-                    cumsizes = np.cumsum([sum(new.mpicomm.allgather(other.size)[:new.mpicomm.rank])] + [sl.size for sl in other.slices])
-                    slices = [slice(size1, size2, 1) for size1, size2 in zip(cumsizes[:-1], cumsizes[1:])]
-                    source.append(MPIScatteredSource(*slices))
-                source = MPIScatteredSource.cconcatenate(*source)
-                new._slices = [Slice(source.get(utils.list_concatenate([[sl.to_array() for sl in other._slices] for other in others]), new_slice))]
-            else:
-                slices, cumsize = [], 0
-                for other in others:
-                    slices += utils.list_concatenate(new.mpicomm.allgather([sl.shift(cumsize) for sl in other.slices]))
-                    cumsize += other.cfilesize
-                new._slices = slices if new.mpicomm.rank == 0 else []
-                new = new.cslice(0, cumsize, 1)  # to balance load
+            slices, cumsize = [], 0
+            for other in others:
+                slices += utils.list_concatenate(new.mpicomm.allgather([sl.shift(cumsize) for sl in other.slices]))
+                cumsize += other.cfilesize
+            new._slices = slices if new.mpicomm.rank == 0 else []
+            new = new.cslice(0, cumsize, 1)  # to balance load
         return new
 
     def cappend(self, other, **kwargs):
@@ -308,14 +291,9 @@ class FileStack(BaseClass):
             for ifile, (rows, iidx) in enumerate(slices):
                 tmp.append(self.files[ifile].read(columns, rows=rows))
                 idx.append(iidx.idx)
-            if self.slices[islice].is_array:
-                sidx = np.argsort(np.concatenate(idx, axis=0))
-                for icol in range(len(columns)):
-                    toret[icol].append(np.concatenate([tt[icol] for tt in tmp], axis=0, dtype=tmp[0][icol].dtype)[sidx])
-            else:
-                sidx = np.argsort([iidx.start for iidx in idx])
-                for icol in range(len(columns)):
-                    toret[icol] += [tmp[ii][icol] for ii in sidx]
+            sidx = np.argsort([iidx.start for iidx in idx])
+            for icol in range(len(columns)):
+                toret[icol] += [tmp[ii][icol] for ii in sidx]
         for icol, tt in enumerate(toret):
             # To save some time
             if len(tt) > 1: toret[icol] = np.concatenate(tt, axis=0, dtype=tt[0].dtype)
@@ -485,17 +463,8 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         toret = [[] for column in columns]
         sl = Slice(rows, size=self.csize)
         rows, idxs = [sl.idx], None
-        if sl.is_array:
-            if 'index' not in self._type_read_rows:
-                nslices = sl.nslices()
-                if nslices > self._read_nslices_max:  # too many slices, let's just read (min, max + 1, 1) and mask afterwards
-                    rows = [slice(sl.min, sl.max + 1, 1) if sl else slice(0, 0, 1)]
-                    idxs = [Slice(rows[0]).find(sl).idx]
-                else:
-                    rows = sl.to_slices()
-        else:
-            if 'slice' not in self._type_read_rows:
-                rows = [sl.to_array()]
+        if 'slice' not in self._type_read_rows:
+            rows = [sl.to_array()]
         toret = [[] for icol in range(len(columns))]
         for irow, row in enumerate(rows):
             idx = None

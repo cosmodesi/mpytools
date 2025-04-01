@@ -236,8 +236,10 @@ class Slice(BaseClass):
         if self.is_array or sl2.is_array:
             idx = self.to_array()
             if sl2.is_array:
-                mask = (sl2.idx >= 0) & (sl2.idx < self.size)
-                idx = idx[sl2.idx[mask]]
+                idx2 = sl2.idx
+                mask = (idx2 >= 0) & (idx2 < self.size)
+                assert mask.all(), '{} is not included in {}'.format(sl2, self)
+                idx = idx[idx2[mask]]
                 # indices in idx2
                 if return_index: idx2 = np.flatnonzero(mask)
             else:
@@ -329,8 +331,8 @@ class Slice(BaseClass):
     @classmethod
     def snap(cls, *others):
         """
-        Snap input slices together, e.g.:
-        >>> Slice.snap(slice(0, 10, 2), slice(10, 20, 2))  # Slice(0, 20, 2)
+        Snap input slices together (to the extent possible), e.g.:
+        >>> Slice.snap(slice(0, 2, 1), slice(0, 10, 2), slice(10, 20, 2))  # [Slice(0, 2, 1), Slice(0, 20, 2)]
         """
         others = [Slice(other) for other in others]
         if any(other.is_array for other in others):

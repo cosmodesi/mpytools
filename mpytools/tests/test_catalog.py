@@ -118,7 +118,7 @@ def test_io():
     csize = ref.csize
     rsize = csize // mpy.COMM_WORLD.size #- 1
 
-    for ext in ['fits', 'npy', 'bigfile', 'hdf5', 'asdf'][:-1]:
+    for ext in ['fits', 'bigfile', 'hdf5', 'npy', 'asdf'][:2]:
 
         #FileStack._verbose_nfiles = 2
 

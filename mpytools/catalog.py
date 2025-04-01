@@ -253,7 +253,7 @@ class BaseCatalog(BaseClass):
 
     @property
     def header(self):
-        return self.source.header
+        return self._header
 
     @property
     def source(self):
@@ -265,7 +265,7 @@ class BaseCatalog(BaseClass):
     def has_source(self):
         """Whether a "source" (typically :class:`FileStack` instance) is attached to current catalog."""
         toret = getattr(self, '_source', None) is not None
-        if toret and {key for key, value in self.data.items() if value is not None} == set(self._source.columns):
+        if toret and all(value is not None for value in self.data.values()): # or {key for key, value in self.data.items() if value is not None} == set(self._source.columns):
             # We have read everything
             toret = False
             self._source = None
@@ -366,10 +366,13 @@ class BaseCatalog(BaseClass):
         Same reference to :attr:`attrs`.
         """
         new = self.copy()
-        name = Slice(*args, size=self.size).idx
-        new.data = {column: array[name] if array is not None else None for column, array in self.data.items()}
-        if self.has_source:
-            new._source = self._source.slice(name)
+        local_slice = Slice(*args, size=new.size).idx
+        if new.has_source:
+            try:
+                new._source = new._source.slice(local_slice)
+            except AssertionError:  # general index, load all columns
+                new.get(new.columns())
+        new.data = {column: array[local_slice] if array is not None else None for column, array in new.data.items()}
         return new
 
     def cslice(self, *args):
@@ -379,16 +382,19 @@ class BaseCatalog(BaseClass):
         Same reference to :attr:`attrs`.
         """
         new = self.copy()
-        cumsizes = np.cumsum([0] + self.mpicomm.allgather(self.size))
+        cumsizes = np.cumsum([0] + new.mpicomm.allgather(new.size))
         global_slice = Slice(*args, size=cumsizes[-1])
-        local_slice = global_slice.split(self.mpicomm.size)[self.mpicomm.rank]
-        in_data = [column for column in self.data if self.data[column] is not None]
+        local_slice = global_slice.split(new.mpicomm.size)[new.mpicomm.rank]
+        if new.has_source:
+            try:
+                new._source = new._source.cslice(global_slice)
+            except AssertionError:  # general index, load all columns
+                new.get(new.columns())
+        in_data = [column for column in new.data if new.data[column] is not None]
         if in_data:
-            source = MPIScatteredSource(slice(cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1], 1))
-            for column, array in zip(in_data, self.get(in_data, return_type=None)):
+            source = MPIScatteredSource(slice(cumsizes[new.mpicomm.rank], cumsizes[new.mpicomm.rank + 1], 1))
+            for column, array in zip(in_data, new.get(in_data, return_type=None)):
                 new.data[column] = source.get(array, local_slice)
-        if self.has_source:
-            new._source = self._source.cslice(global_slice)
         return new
 
     @classmethod
@@ -792,6 +798,7 @@ class BaseCatalog(BaseClass):
         source = FileStack(*args, **kwargs)
         new = cls.from_dict(attrs=attrs, mpicomm=source.mpicomm, **init_kwargs)
         new._source = source
+        new._header = source.header
         for column in source.columns: new.data[column] = None
         return new
 
