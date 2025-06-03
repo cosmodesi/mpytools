@@ -361,10 +361,11 @@ def get_filetype(filetype=None, filename=None):
     """
     if filetype is None:
         if filename is not None:
-            ext = os.path.splitext(filename)[1][1:]
+            filename = str(filename)
             for filetype in RegisteredFile._registry.values():
-                if ext in filetype.extensions:
-                    return filetype
+                for ext in filetype.extensions:
+                    if filename.endswith('.' + ext):
+                        return filetype
             raise IOError('Extension {} is unknown'.format(ext))
     if isinstance(filetype, str):
         filetype = RegisteredFile._registry[filetype.lower()]
@@ -549,7 +550,7 @@ class FitsFile(BaseFile):
     A similar issue happens with nbodykit - though at a lower frequency.
     """
     name = 'fits'
-    extensions = ['fits']
+    extensions = ['fits', 'fits.gz', 'fits.bz2']
     _type_read_rows = ['slice']
     _type_write_data = ['array']
 
