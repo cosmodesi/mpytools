@@ -359,6 +359,17 @@ class BaseCatalog(BaseClass):
             new = None
         return new
 
+    @classmethod
+    @CurrentMPIComm.enable
+    def scatter(cls, catalog, mpiroot=0, mpicomm=None):
+        """Return new catalog, scattered from rank ``mpiroot``."""
+        columns = mpicomm.bcast(catalog.columns() if mpicomm.rank == mpiroot else None, root=mpiroot)
+        attrs = mpicomm.bcast(catalog.attrs if mpicomm.rank == mpiroot else None, root=mpiroot)
+        data = {}
+        for name in columns:
+            data[name] = mpy.scatter(catalog[name] if mpicomm.rank == mpiroot else None, mpicomm=mpicomm, mpiroot=mpiroot)
+        return cls.from_dict(data=data, columns=columns, attrs=attrs, mpicomm=mpicomm)
+
     def slice(self, *args):
         """
         Slice catalog (locally), e.g.:
