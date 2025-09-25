@@ -614,8 +614,14 @@ class FitsFile(BaseFile):
             fitsio.write(self.filename, data, header=header, clobber=True)
 
 
-try: import h5py
-except ImportError: h5py = None
+
+try:
+    import h5py
+except ImportError:
+    h5py = None
+else:
+    try: import hdf5plugin
+    except ImportError: pass
 
 
 class HDF5File(BaseFile):
