@@ -75,7 +75,7 @@ class Slice(BaseClass):
             #if stop < 0: stop = None  # None instead of -1 for e.g. slice(4, -1, -1)
             sl = slice(start, stop, step)
         else:
-            sl = np.array(sl, copy=copy)
+            sl = np.array(sl) if copy else np.asarray(sl)
             if not (np.issubdtype(sl.dtype, np.integer) or sl.dtype == '?'):
                 raise ValueError('If array, must be of integer or boolean type')
             if sl.dtype == '?':

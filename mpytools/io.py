@@ -554,7 +554,7 @@ class FitsFile(BaseFile):
     _type_read_rows = ['slice']
     _type_write_data = ['array']
 
-    def __init__(self, filename, ext=None, **kwargs):
+    def __init__(self, filename, ext=None, mpicomm=None):
         """
         Initialize :class:`FitsFile`.
 
@@ -566,13 +566,13 @@ class FitsFile(BaseFile):
         ext : int, default=None
             FITS extension. Defaults to first extension with data.
 
-        kwargs : dict
-            Arguments for :class:`BaseFile` (mpicomm).
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
         """
         if fitsio is None:
             raise ImportError('Install fitsio')
         self.ext = ext
-        super(FitsFile, self).__init__(filename=filename, **kwargs)
+        super(FitsFile, self).__init__(filename=filename, mpicomm=mpicomm)
 
     def _read_header_root(self):
         # Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
@@ -645,7 +645,7 @@ class HDF5File(BaseFile):
     _type_read_rows = ['slice', 'sslice', 'index']
     _type_write_data = ['dict']
 
-    def __init__(self, filename, group='/', **kwargs):
+    def __init__(self, filename, group='/', mpicomm=None, **kwargs):
         """
         Initialize :class:`HDF5File`.
 
@@ -658,17 +658,22 @@ class HDF5File(BaseFile):
             HDF5 group where columns are located.
 
         kwargs : dict
-            Arguments for :class:`BaseFile` (mpicomm).
+            Arguments for :class:`h5py.File`.
+            See https://docs.h5py.org/en/stable/high/file.html#h5py.File.
+
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
         """
         if h5py is None:
             raise ImportError('Install h5py')
         self.group = group
         if not group or group == '/' * len(group):
             self.group = '/'
-        super(HDF5File, self).__init__(filename=filename, **kwargs)
+        self.kw = kwargs
+        super(HDF5File, self).__init__(filename=filename, mpicomm=mpicomm)
 
     def _read_header_root(self):
-        with h5py.File(self.filename, 'r') as file:
+        with h5py.File(self.filename, 'r', **self.kw) as file:
             grp = file[self.group]
             columns = list(grp.keys())
             size = grp[columns[0]].shape[0]
@@ -678,7 +683,7 @@ class HDF5File(BaseFile):
             return {'csize': size, 'columns': columns, 'header': dict(grp.attrs)}
 
     def _read_rows(self, columns, rows):
-        with h5py.File(self.filename, 'r') as file:
+        with h5py.File(self.filename, 'r', **self.kw) as file:
             grp = file[self.group]
             if isinstance(rows, slice):
                 return [grp[column][rows] for column in columns]
@@ -687,7 +692,7 @@ class HDF5File(BaseFile):
 
     def _write_data(self, data, header):
         driver = 'mpio'
-        kwargs = {'comm': self.mpicomm}
+        kwargs = {'comm': self.mpicomm} | self.kw
         import h5py
         try:
             h5py.File(self.filename, 'w', driver=driver, **kwargs)
@@ -747,7 +752,7 @@ class BinaryFile(BaseFile):
     def _write_data(self, data, header):
         cumsizes = np.cumsum([0] + self.mpicomm.allgather(len(data)))
         if self.is_mpi_root():
-            fp = open_memmap(self.filename, mode='w+', dtype=data.dtype, shape=(cumsizes[-1],))
+            fp = open_memmap(self.filename, mode='w+', dtype=data.dtype, shape=(cumsizes[-1].item(),))
         self.mpicomm.Barrier()
         start, stop = cumsizes[self.mpicomm.rank], cumsizes[self.mpicomm.rank + 1]
         fp = open_memmap(self.filename, mode='r+')
@@ -767,7 +772,7 @@ class BigFile(BaseFile):
     _type_read_rows = ['slice']
     _type_write_data = ['dict']
 
-    def __init__(self, filename, group='/', header=None, exclude=None, overwrite=False, **kwargs):
+    def __init__(self, filename, group='/', header=None, exclude=None, overwrite=False, mpicomm=None):
         """
         Initialize :class:`BigFile`.
 
@@ -791,8 +796,8 @@ class BigFile(BaseFile):
             One can pass ``overwrite = True`` to remove previous file/group directory
             (at one's own risk) and write a new file.
 
-        kwargs : dict
-            Arguments for :class:`BaseFile` (mpicomm).
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
         """
         if bigfile is None:
             raise ImportError('Install bigfile')
@@ -803,7 +808,7 @@ class BigFile(BaseFile):
         self.header_blocks = header
         self.exclude = exclude
         self.overwrite = bool(overwrite)
-        super(BigFile, self).__init__(filename=filename, **kwargs)
+        super(BigFile, self).__init__(filename=filename, mpicomm=mpicomm)
 
     def _read_header_root(self):
         with bigfile.File(filename=self.filename) as file:
@@ -954,7 +959,7 @@ class AsdfFile(BaseFile):
     _type_read_rows = ['slice', 'sslice']
     _type_write_data = ['dict']
 
-    def __init__(self, filename, group='', header=None, exclude=None, **kwargs):
+    def __init__(self, filename, group='', header=None, exclude=None, mpicomm=None):
         """
         Initialize :class:`AsdfFile`.
 
@@ -973,15 +978,15 @@ class AsdfFile(BaseFile):
             List of datasets to exclude (when reading file size).
             Can contain *regex* or Unix-style patterns.
 
-        kwargs : dict
-            Arguments for :class:`BaseFile` (mpicomm).
+        mpicomm : MPI communicator, default=None
+            The current MPI communicator.
         """
         if asdf is None:
             raise ImportError('Install asdf')
         self.group = group
         self.header_blocks = header
         self.exclude = exclude
-        super(AsdfFile, self).__init__(filename=filename, **kwargs)
+        super(AsdfFile, self).__init__(filename=filename, mpicomm=mpicomm)
 
     def _read_header_root(self):
         with asdf.open(self.filename) as file:

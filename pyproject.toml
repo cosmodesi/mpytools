@@ -1,0 +1,21 @@
+[build-system]
+requires = [
+    "setuptools>=61",
+    "wheel",
+    "setuptools_scm>=6.2",
+    "pip>=21.2",
+]
+
+[project]
+name = "mpytools"
+authors = [{name = "cosmodesi"}]
+description = "package with MPI utilities"
+version = "1.0.0"
+dependencies = ["numpy", "scipy", "mpi4py"]
+readme = "README.md"
+requires-python = ">=3.10"
+urls = {Repository = "https://github.com/cosmodesi/mpytools"}
+classifiers = ["Programming Language :: Python :: 3"]
+
+[tool.setuptools]
+packages = ["mpytools"]
