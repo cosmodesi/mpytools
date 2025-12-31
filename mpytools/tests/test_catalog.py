@@ -288,6 +288,7 @@ def test_misc():
     test = test.csort('rank', size='orderby_counts')
     sizes = test.mpicomm.allgather(test.size)
     assert sizes[-1] == 10
+    test.all_to_all()
     gathered = test.gather(mpiroot=0)
     csize = test.csize
     if test.mpicomm.rank == 0:

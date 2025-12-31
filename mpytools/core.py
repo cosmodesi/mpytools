@@ -12,7 +12,7 @@ from . import utils
 from .utils import BaseClass, is_sequence, CurrentMPIComm
 
 
-__all__ = ['array', 'reduce', 'gather', 'bcast', 'scatter', 'send', 'recv', 'sendrecv',
+__all__ = ['array', 'reduce', 'gather', 'bcast', 'scatter', 'all_to_all', 'send', 'recv', 'sendrecv',
            'csize', 'cshape', 'creshape', 'cslice', 'cconcatenate', 'cappend',
            'csum', 'cprod', 'cmean', 'caverage', 'cmin', 'cmax', 'cargmin', 'cargmax', 'csort', 'cquantile',
            'cvar', 'cstd', 'ccov', 'ccorrcoef']
@@ -594,6 +594,10 @@ class array(np.ndarray):
         """Return numpy array gathered on rank ``mpiroot`` (``None`` to gather on all ranks)."""
         return gather(self, mpicomm=self.mpicomm, mpiroot=mpiroot)
 
+    def all_to_all(self, counts=None):
+        """All-to-all operation. If ``counts`` is ``None``, balance load."""
+        return all_to_all(self, counts=counts, mpicomm=self.mpicomm)
+
     def reduce(self, mpiroot=0, op='sum'):
         """Return numpy array reduced on rank ``mpiroot`` (``None`` to reduce on all ranks)."""
         return reduce(self, mpicomm=self.mpicomm, op=op)
@@ -1017,6 +1021,92 @@ def scatter(data, size=None, mpiroot=0, mpicomm=None):
     # do the scatter
     mpicomm.Barrier()
     mpicomm.Scatterv([data, (counts, offsets), dt], [recvbuffer, dt], root=mpiroot)
+    dt.Free()
+    return recvbuffer
+
+
+@CurrentMPIComm.enable
+def all_to_all(data, counts=None, mpicomm=None):
+    """
+    All-to-all communication.
+    This uses ``Scatterv``, which avoids mpi4py pickling, and also
+    avoids the 2 GB mpi4py limit for bytes using a custom datatype
+
+    Parameters
+    ----------
+    data : array_like or None
+        On `mpiroot`, this gives the data to split and scatter.
+
+    counts : array, default=None
+        Size of data chunks to send to each rank.
+        An array or list of size ``mpicomm.size``.
+
+    mpicomm : MPI communicator, default=None
+        The MPI communicator.
+
+    Returns
+    -------
+    recvbuffer : array_like
+        The chunk of ``data`` that each rank gets.
+    """
+    if counts is None:
+        # balance
+        current_sizes = mpicomm.allgather(len(data))
+        total_size = sum(current_sizes)
+        current_stops = np.cumsum(current_sizes)
+        current_starts = current_stops - current_sizes
+        new_sizes = [(rank + 1) * total_size // mpicomm.size - rank * total_size // mpicomm.size for rank in range(mpicomm.size)]
+        new_stops = np.cumsum(new_sizes)
+        new_starts = new_stops - new_sizes
+        current_start, current_stop = current_starts[mpicomm.rank], current_stops[mpicomm.rank]
+        # Intersection of intervals current inter new
+        counts = [max(0, min(current_stop, new_stop) - max(current_start, new_start)) for new_start, new_stop in zip(new_starts, new_stops)]
+    sendcounts = np.asarray(counts, dtype=np.int32)
+
+    # Exchange counts to know what we will receive
+    recvcounts = np.empty(mpicomm.size, dtype=np.int32)
+    mpicomm.Alltoall(sendcounts, recvcounts)
+
+    # Compute displacements
+    sendoffsets = np.insert(np.cumsum(sendcounts[:-1]), 0, 0)
+    recvoffsets = np.insert(np.cumsum(recvcounts[:-1]), 0, 0)
+
+    mpiroot = 0
+    data = np.ascontiguousarray(data)
+    if mpicomm.rank == mpiroot:
+        # Need C-contiguous order
+        shape_and_dtype = (data.shape, data.dtype)
+    else:
+        shape_and_dtype = None
+
+    # each rank needs shape/dtype of input data
+    shape, dtype = mpicomm.bcast(shape_and_dtype, root=mpiroot)
+
+    # object dtype is not supported
+    fail = False
+    if dtype.char == 'V':
+        fail = any(dtype[name] == 'O' for name in dtype.names)
+    else:
+        fail = dtype == 'O'
+    if fail:
+        raise ValueError('"object" data type not supported in scatter; please specify specific data type')
+
+    # setup the custom dtype
+    duplicity = np.prod(shape[1:], dtype='intp')
+    itemsize = duplicity * dtype.itemsize
+    dt = MPI.BYTE.Create_contiguous(itemsize)
+    dt.Commit()
+
+    # compute the new shape for each rank
+    newshape = list(shape)
+    newshape[0] = sum(recvcounts)
+
+    # the return array
+    recvbuffer = np.empty(newshape, dtype=dtype, order='C')
+
+    # do the scatter
+    mpicomm.Barrier()
+    mpicomm.Alltoallv([data, (sendcounts, sendoffsets), dt], [recvbuffer, (recvcounts, recvoffsets), dt])
     dt.Free()
     return recvbuffer
 

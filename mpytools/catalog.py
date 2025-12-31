@@ -927,7 +927,18 @@ class BaseCatalog(BaseClass):
         mpsort.sort(array, orderby=orderby, out=out)
         new = self.copy()
         new.data = BaseCatalog.from_array(out, mpicomm=self.mpicomm).data
-        
+        return new
+
+    def all_to_all(self, counts=None):
+        """
+        All-to-all operation. If ``counts`` is ``None``, balance load.
+
+        counts : array, default=None
+            Size of catalog chunks to send to each rank.
+            An array or list of size ``self.mpicomm.size``.
+        """
+        new = self.copy()
+        new.data = BaseCatalog.from_array(mpy.all_to_all(self.to_array(struct=True), counts=counts, mpicomm=self.mpicomm), mpicomm=self.mpicomm).data
         return new
 
     def balance_across_rank(self):
@@ -935,11 +946,10 @@ class BaseCatalog(BaseClass):
         Return new catalog with roughly similar size on each rank. mpicomm not expected to be None.
         Note: In specific case, can produce unbalanced catalog (typically, when size < mpicomm.size ..)
         """
-
+        raise NotImplementedError('use all_to_all instead')
         self['index'] = np.arange(self.size) % self.mpicomm.size
         new = self.csort('index', size='orderby_counts')
         new.__delitem__('index')
-        
         return new
 
 class Catalog(BaseCatalog):

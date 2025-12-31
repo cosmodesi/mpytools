@@ -45,6 +45,12 @@ def test_mpi():
             ref = sum(gathered)
         assert_allclose(test, ref)
 
+        array = array[mpicomm.rank::mpicomm.size]
+        alltoall = mpy.all_to_all(array)
+        #print(np.concatenate(mpicomm.allgather(alltoall)))
+        #print(np.concatenate(mpicomm.allgather(array)))
+        assert_allclose(np.concatenate(mpicomm.allgather(alltoall)), np.concatenate(mpicomm.allgather(array)))
+
 
 def test_array():
 
@@ -104,5 +110,5 @@ if __name__ == '__main__':
 
     setup_logging()
 
-    # test_mpi()
+    #test_mpi()
     test_array()
