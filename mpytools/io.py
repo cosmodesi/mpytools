@@ -674,21 +674,28 @@ class HDF5File(BaseFile):
 
     def _read_header_root(self):
         with h5py.File(self.filename, 'r', **self.kw) as file:
-            grp = file[self.group]
-            columns = list(grp.keys())
-            size = grp[columns[0]].shape[0]
+            if self.group not in file:
+                raise KeyError(f'{self.group} not found in file {self.filename} with groups {list(file.keys())}')
+            group = file[self.group]
+            if not isinstance(group, h5py.Group):
+                raise KeyError(f'{self.group} is not a Group in file {self.filename} with groups {list(file.keys())}')
+            columns = list(group.keys())
+            dataset = group[columns[0]]
+            if not isinstance(dataset, h5py.Dataset):
+                raise KeyError(f'{columns[0]} is not a Dataset in file {self.filename} with groups {list(file.keys())}')
+            size = dataset.shape[0]
             for name in columns:
-                if grp[name].shape[0] != size:
-                    raise IOError('Column {} has different length (expected {:d}, found {:d})'.format(name, size, grp[name].shape[0]))
-            return {'csize': size, 'columns': columns, 'header': dict(grp.attrs)}
+                if group[name].shape[0] != size:
+                    raise IOError('Column {} has different length (expected {:d}, found {:d})'.format(name, size, group[name].shape[0]))
+            return {'csize': size, 'columns': columns, 'header': dict(group.attrs)}
 
     def _read_rows(self, columns, rows):
         with h5py.File(self.filename, 'r', **self.kw) as file:
-            grp = file[self.group]
+            group = file[self.group]
             if isinstance(rows, slice):
-                return [grp[column][rows] for column in columns]
+                return [group[column][rows] for column in columns]
             rows, inverse = np.unique(rows, return_inverse=True)
-            return [grp[column][rows][inverse] for column in columns]
+            return [group[column][rows][inverse] for column in columns]
 
     def _write_data(self, data, header):
         driver = 'mpio'
