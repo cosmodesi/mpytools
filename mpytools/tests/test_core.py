@@ -97,7 +97,7 @@ def test_array():
         assert getattr(mpy, name)(cshape=10).cshape == (10,)
     assert mpy.full(fill_value=4., shape=10).shape == (10,)
     assert mpy.full(fill_value=4., cshape=10).cshape == (10,)
-    assert np.array(mpi_array, copy=False, dtype='f8').dtype == np.float64
+    assert np.asarray(mpi_array, dtype='f8').dtype == np.float64
     assert np.asanyarray(mpi_array, dtype=None) is mpi_array
 
     carray = np.arange(480).reshape(-1, 4, 3)

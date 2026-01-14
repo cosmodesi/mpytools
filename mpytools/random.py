@@ -92,6 +92,7 @@ def set_independent_seed(seed=None, mpicomm=None, size=10000):
         Seed used to initialize :mod:`np.random` and :mod:`random` global states.
     """
     seed = bcast_seed(seed=seed, mpicomm=mpicomm, size=size)[mpicomm.rank]
+    seed = int(seed)  # for random.seed
     np.random.seed(seed)
     random.seed(seed)
     return seed

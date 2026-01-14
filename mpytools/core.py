@@ -600,7 +600,7 @@ class array(np.ndarray):
 
     def reduce(self, mpiroot=0, op='sum'):
         """Return numpy array reduced on rank ``mpiroot`` (``None`` to reduce on all ranks)."""
-        return reduce(self, mpicomm=self.mpicomm, op=op)
+        return reduce(self, mpiroot=mpiroot, mpicomm=self.mpicomm, op=op)
 
     def cslice(self, *args):
         """Perform collective array slicing."""
@@ -610,7 +610,7 @@ class array(np.ndarray):
         """(Collectively) sort input array ``data`` along ``axis``."""
         # import mpsort
         # self.value = mpsort.sort(self.value, orderby=None, comm=self.mpicomm, tuning=[])
-        self.data = csort(self, axis=axis, kind=kind).data  # most naive implementation
+        self[...] = csort(self, axis=axis, kind=kind)  # most naive implementation
 
     def csum(self, axis=None, **kwargs):
         """Collective array sum along ``axis``."""

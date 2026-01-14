@@ -84,6 +84,8 @@ def cast_array_wrapper(func):
         toret = func(self, *args, **kwargs)
         if is_sequence(toret):
             return [cast_array(tt, return_type=return_type, mpicomm=self.mpicomm) for tt in toret]
+        if toret is None:
+            return toret
         return cast_array(toret, return_type=return_type, mpicomm=self.mpicomm)
 
     return wrapper
