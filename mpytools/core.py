@@ -513,7 +513,7 @@ class array(np.ndarray):
             The current MPI communicator.
         """
         if mpiroot is None or mpicomm.rank == mpiroot:
-            value = np.array(value, copy=copy, dtype=dtype)
+            value = np.array(value, dtype=dtype) if copy else np.asarray(value, dtype=dtype)
         if mpiroot is not None:
             value = scatter(value, mpicomm=mpicomm, mpiroot=mpiroot)
         obj = value.view(cls)
