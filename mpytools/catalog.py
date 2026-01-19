@@ -318,7 +318,10 @@ class BaseCatalog(BaseClass):
         return toret
 
     def set(self, column, item):
-        """Set column of name(s) ``column``."""
+        """
+        Set column of name(s) ``column``.
+        Input ``column`` and ``item`` can be single or list of same length.
+        """
         isscalar = isinstance(column, str)
         if isscalar: column = [column]
         if not is_sequence(item):
@@ -330,6 +333,18 @@ class BaseCatalog(BaseClass):
             size = self.size
             if len(value) != size:
                 raise ValueError('Catalog size is {:d}, but input column is of length {:d}'.format(size, len(value)))
+
+    def update(self, other):
+        """Update current catalog with columns from ``other`` catalog."""
+        columns = list(other)
+        items = [other[column] for column in columns]
+        self.set(columns, items)
+
+    def clone(self, other):
+        """Clone current catalog, updating columns from ``other`` catalog."""
+        new = self.copy()
+        new.update(other)
+        return new
 
     def cget(self, *args, mpiroot=0, **kwargs):
         """
