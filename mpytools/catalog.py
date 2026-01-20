@@ -215,6 +215,10 @@ class BaseCatalog(BaseClass):
         """Iterate on catalog columns."""
         return iter(self.data)
 
+    def keys(self):
+        """To make dict(catalog) work."""
+        return self.data.keys()
+
     @cast_array_wrapper
     def cindex(self):
         """Row numbers in the global catalog."""
@@ -334,17 +338,27 @@ class BaseCatalog(BaseClass):
             if len(value) != size:
                 raise ValueError('Catalog size is {:d}, but input column is of length {:d}'.format(size, len(value)))
 
-    def update(self, other):
+    def update(self, *args, **kwargs):
         """Update current catalog with columns from ``other`` catalog."""
+        other = {}
+        for arg in args:
+            other |= dict(arg)
+        other |= kwargs
         columns = list(other)
         items = [other[column] for column in columns]
         self.set(columns, items)
 
-    def clone(self, other):
+    def clone(self, *args, **kwargs):
         """Clone current catalog, updating columns from ``other`` catalog."""
         new = self.copy()
-        new.update(other)
+        new.update(*args, **kwargs)
         return new
+
+    def pop(self, column, *args, **kwargs):
+        """get and delete column."""
+        toret = self.get(column, *args, **kwargs)
+        del self[column]
+        return toret
 
     def cget(self, *args, mpiroot=0, **kwargs):
         """

@@ -310,11 +310,17 @@ def test_misc():
         else:
             raise ValueError('A ValueError should have been raised')
         func(ref, ref[['RA']], intersection=True)
-    ref = Catalog(data={'RA': rng.uniform(0., 1.), 'DEC': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.)})
+    data = {'RA': rng.uniform(0., 1.), 'DEC': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.)}
+    ref = Catalog(data=data)
+    assert dict(ref).keys() == data.keys()
     ref.update(Catalog(data={'RA': np.ones(ref.size), 'NEW': ref.zeros()}))
     assert np.allclose(ref['RA'], 1.) and np.allclose(ref['NEW'], 0.)
-    ref = ref.clone(Catalog(data={'RA': ref.zeros(), 'ANOTHER': ref.ones()}))
+    ref = ref.clone(RA=ref.zeros(), ANOTHER=ref.ones())
     assert np.allclose(ref['RA'], 0.) and np.allclose(ref['ANOTHER'], 1.)
+    value = ref['ANOTHER']
+    assert 'ANOTHER' in ref.columns()
+    assert np.allclose(ref.pop('ANOTHER'), value)
+    assert 'ANOTHER' not in ref.columns()
 
 
 def test_memory():
