@@ -690,7 +690,11 @@ class HDF5File(BaseFile):
             return {'csize': size, 'columns': columns, 'header': dict(group.attrs)}
 
     def _read_rows(self, columns, rows):
-        with h5py.File(self.filename, 'r', **self.kw) as file:
+        if h5py.get_config().mpi:
+            kwargs = {'driver': 'mpio', 'comm': self.mpicomm} | self.kw
+        else:
+            kwargs = {} | self.kw
+        with h5py.File(self.filename, 'r', **kwargs) as file:
             group = file[self.group]
             if isinstance(rows, slice):
                 return [group[column][rows] for column in columns]
@@ -698,12 +702,10 @@ class HDF5File(BaseFile):
             return [group[column][rows][inverse] for column in columns]
 
     def _write_data(self, data, header):
-        driver = 'mpio'
-        kwargs = {'comm': self.mpicomm} | self.kw
-        import h5py
-        try:
-            h5py.File(self.filename, 'w', driver=driver, **kwargs)
-        except ValueError:
+        if h5py.get_config().mpi:
+            driver = 'mpio'
+            kwargs = {'comm': self.mpicomm}
+        else:
             driver = None
             kwargs = {}
         if driver == 'mpio':
@@ -721,7 +723,7 @@ class HDF5File(BaseFile):
                     dset[start:stop] = data[name]
         else:
             if self.is_mpi_root():
-                h5py.File(self.filename, 'w', driver=driver, **kwargs)
+                h5py.File(self.filename, 'w', **kwargs)
             first = True
             for name in data:
                 array = mpy.gather(data[name], mpicomm=self.mpicomm, mpiroot=self.mpiroot)
