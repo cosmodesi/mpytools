@@ -717,7 +717,7 @@ class HDF5File(BaseFile):
                 grp = file
                 if self.group != '/':
                     grp = file.create_group(self.group)
-                grp.attrs.update(self.attrs)
+                grp.attrs.update(header)
                 for name in data:
                     dset = grp.create_dataset(name, shape=(csize,) + data[name].shape[1:], dtype=data[name].dtype)
                     dset[start:stop] = data[name]
