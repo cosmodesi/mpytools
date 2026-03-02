@@ -223,6 +223,15 @@ class MPIRandomState(object):
 
         return self._call_rngmethod(sampler, (), itemshape, dtype)
 
+    def binomial(self, n, p, itemshape=(), dtype="f8"):
+        """Produce :attr:`size` binomials, each of shape itemshape. This is a collective MPI call."""
+
+        def sampler(rng, args, size):
+            n, p = args
+            return rng.binomial(n=n, p=p, size=size)
+
+        return self._call_rngmethod(sampler, (n, p), itemshape, dtype)
+
     def _call_rngmethod(self, sampler, args, itemshape, dtype='f8'):
         """
         Loop over the seed table, and call ``sampler(rng, args, size)``
