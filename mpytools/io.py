@@ -690,7 +690,7 @@ class HDF5File(BaseFile):
             return {'csize': size, 'columns': columns, 'header': dict(group.attrs)}
 
     def _read_rows(self, columns, rows):
-        if h5py.get_config().mpi:
+        if self.mpicomm.size > 1 and h5py.get_config().mpi:
             kwargs = {'driver': 'mpio', 'comm': self.mpicomm} | self.kw
         else:
             kwargs = {} | self.kw
@@ -702,7 +702,7 @@ class HDF5File(BaseFile):
             return [group[column][rows][inverse] for column in columns]
 
     def _write_data(self, data, header):
-        if h5py.get_config().mpi:
+        if self.mpicomm.size > 1 and h5py.get_config().mpi:
             driver = 'mpio'
             kwargs = {'comm': self.mpicomm}
         else:
