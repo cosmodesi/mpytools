@@ -118,7 +118,8 @@ def test_io():
     csize = ref.csize
     rsize = csize // mpy.COMM_WORLD.size #- 1
 
-    for ext in ['fits', 'fits.bz2', 'bigfile', 'hdf5', 'npy', 'asdf'][:-1]:
+    for ext, kw in zip(['fits', 'fits', 'fits.bz2', 'bigfile', 'hdf5', 'npy', 'asdf'][:-1],
+                       [{}, {'backend': 'astropy'}, {}, {}, {}, {}, {}]):
 
         #FileStack._verbose_nfiles = 2
 
@@ -132,9 +133,9 @@ def test_io():
             if bref is not None:
                 bref.write(bfn)
             mpicomm.Barrier()
-            bref = Catalog.read(bfn)
+            bref = Catalog.read(bfn, **kw)
             fns = [mpicomm.bcast(os.path.join(tmp_dir, 'tmp{:d}.{}'.format(i, ext)), root=0) for i in range(4)]
-            ref.write(fns)
+            ref.write(fns, **kw)
 
             for ii in range(15):
                 test = Catalog.read(fn)

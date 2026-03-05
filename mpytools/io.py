@@ -531,51 +531,75 @@ class BaseFile(BaseClass, metaclass=RegisteredFile):
         raise NotImplementedError
 
 
-try: import fitsio
-except ImportError: fitsio = None
+try:
+    from astropy.io import fits as apyfits
+    from astropy.table import Table
+except Exception:
+    apyfits = None
+
+try:
+    import fitsio
+except Exception:
+    fitsio = None
 
 
 class FitsFile(BaseFile):
     """
-    Class to read/write a Fits file from/to disk.
+    Class to read/write a FITS file from/to disk.
+
+    Notes
+    -----
+    - Read backends:
+        * fitsio (fast, supports efficient row selection)
+        * astropy (fast for full-table reads via Table.read; header via fits.getheader/open)
+
+    - Write backends:
+        * fitsio.write
+        * astropy.io.fits (build HDUs and write)
 
     Warning
     -------
     Writing a FITS file requires all data to be gathered on a single rank, which may cause out-of-memory errors.
-
-    Note
-    ----
-    In some circumstances (e.g. catalog has just been written), :meth:`read` fails with a file not found error.
-    We have tried making sure processes read the file one after the other, but that does not solve the issue.
-    A similar issue happens with nbodykit - though at a lower frequency.
     """
     name = 'fits'
     extensions = ['fits', 'fits.gz', 'fits.bz2']
     _type_read_rows = ['slice']
     _type_write_data = ['array']
 
-    def __init__(self, filename, ext=None, mpicomm=None):
+    def __init__(self, filename, ext=None, mpicomm=None, backend="fitsio"):
         """
-        Initialize :class:`FitsFile`.
-
         Parameters
         ----------
-        filename : string
+        filename : str
             File name.
 
-        ext : int, default=None
-            FITS extension. Defaults to first extension with data.
+        ext : int or str, default=None
+            FITS extension. Defaults to first extension with tabular data.
 
         mpicomm : MPI communicator, default=None
             The current MPI communicator.
+
+        backend : {"fitsio", "astropy"}, default="fitsio"
+            Backend for reading/writing.
         """
-        if fitsio is None:
-            raise ImportError('Install fitsio')
         self.ext = ext
+        self.backend = str(backend).lower()
+
+        if self.backend not in ("fitsio", "astropy"):
+            raise ValueError(f"backend must be one of {{'fitsio','astropy'}}, got {backend}")
+
+        if self.backend == "fitsio" and fitsio is None:
+            raise ImportError("backend='fitsio' requires fitsio to be installed")
+        if self.backend == "astropy" and apyfits is None:
+            raise ImportError("backend='astropy' requires astropy to be installed")
         super(FitsFile, self).__init__(filename=filename, mpicomm=mpicomm)
 
     def _read_header_root(self):
-        # Taken from https://github.com/bccp/nbodykit/blob/master/nbodykit/io/fits.py
+        if self.backend == "fitsio":
+            return self._read_header_root_fitsio()
+        return self._read_header_root_astropy()
+
+    def _read_header_root_fitsio(self):
         with fitsio.FITS(self.filename) as file:
             if getattr(self, 'ext') is None:
                 for i, hdu in enumerate(file):
@@ -583,36 +607,163 @@ class FitsFile(BaseFile):
                         self.ext = i
                         break
                 if self.ext is None:
-                    raise IOError('{} has no binary table to read'.format(self.filename))
+                    raise IOError(f'{self.filename} has no binary table to read')
             else:
                 if isinstance(self.ext, str):
                     if self.ext not in file:
-                        raise IOError('{} does not contain extension with name {}'.format(self.filename, self.ext))
+                        raise IOError(f'{self.filename} does not contain extension with name {self.ext}')
                 elif self.ext >= len(file):
-                    raise IOError('{} extension {} is not valid'.format(self.filename, self.ext))
+                    raise IOError(f'{self.filename} extension {self.ext} is not valid')
+
             file = file[self.ext]
-            # make sure we crash if data is wrong or missing
             if not file.has_data() or file.get_exttype() == 'IMAGE_HDU':
-                raise IOError('{} extension {} is not a readable binary table'.format(self.filename, self.ext))
-            return {'csize': file.get_nrows(), 'columns': file.get_rec_dtype()[0].names, 'header': dict(file.read_header()), 'ext': self.ext}
+                raise IOError(f'{self.filename} extension {self.ext} is not a readable binary table')
+
+            rec_dtype = file.get_rec_dtype()[0]
+            return {
+                'csize': file.get_nrows(),
+                'columns': rec_dtype.names,
+                'header': dict(file.read_header()),
+                'ext': self.ext
+            }
+
+    def _read_header_root_astropy(self):
+        with apyfits.open(self.filename, memmap=True, lazy_load_hdus=True) as hdul:
+            # resolve ext if None
+            if getattr(self, "ext") is None:
+                found = None
+                for i, hdu in enumerate(hdul):
+                    # avoid hdu.data entirely
+                    xtension = hdu.header.get("XTENSION", "")
+                    if xtension in ("BINTABLE", "TABLE"):
+                        found = i
+                        break
+                if found is None:
+                    raise IOError(f"{self.filename} has no binary table to read")
+                self.ext = found
+            # resolve ext if str (EXTNAME)
+            elif isinstance(self.ext, str):
+                found = None
+                for i, hdu in enumerate(hdul):
+                    if hdu.header.get("EXTNAME", None) == self.ext:
+                        found = i
+                        break
+                if found is None:
+                    raise IOError(f"{self.filename} does not contain extension with name {self.ext}")
+                self.ext = found
+            # validate ext if int
+            else:
+                if self.ext >= len(hdul):
+                    raise IOError(f"{self.filename} extension {self.ext} is not valid")
+            hdu = hdul[self.ext]
+            xtension = hdu.header.get("XTENSION", "")
+            if xtension not in ("BINTABLE", "TABLE"):
+                raise IOError(f"{self.filename} extension {self.ext} is not a readable binary table")
+            header_dict = dict(hdu.header)
+            if getattr(hdu, "columns", None) is not None:
+                columns = list(hdu.columns.names)
+            else:
+                # fallback: parse TTYPEi keywords
+                tfields = int(hdu.header.get("TFIELDS", 0))
+                columns = [hdu.header.get(f"TTYPE{i}", f"COL{i}") for i in range(1, tfields + 1)]
+            # row count from header
+            csize = int(hdu.header.get("NAXIS2", 0))
+            return {"csize": csize, "columns": columns, "header": header_dict, "ext": self.ext}
 
     def _read_rows(self, columns, rows):
+        if self.backend == "fitsio":
+            return self._read_rows_fitsio(columns, rows)
+        return self._read_rows_astropy(columns, rows)
+
+    def _read_rows_fitsio(self, columns, rows):
         if rows.stop - rows.start == self.csize:
-            rows = None
+            rows_ = None
         else:
-            rows = range(rows.start, rows.stop)
-        if set(columns) == set(self._columns):
-            cols = None
-        else:
-            cols = columns
-        toret = fitsio.read(self.filename, ext=self.ext, columns=cols, rows=rows)
-        return [toret[column] for column in columns]
+            rows_ = range(rows.start, rows.stop)
+        cols_ = None if set(columns) == set(self._columns) else columns
+        table = fitsio.read(self.filename, ext=self.ext, columns=cols_, rows=rows_)
+        return [table[column] for column in columns]
+
+    def _read_rows_astropy(self, columns, rows):
+        all_rows = (rows.stop - rows.start == self.csize)
+        if all_rows:
+            table = Table.read(self.filename, hdu=self.ext)
+            return [np.asarray(table[col]) for col in columns]
+        start, stop = rows.start, rows.stop
+        with apyfits.open(self.filename, memmap=True, lazy_load_hdus=True) as hdul:
+            data = hdul[self.ext].data
+            if data is None:
+                raise IOError(f'{self.filename} extension {self.ext} has no data')
+            sub = data[start:stop]
+            return [np.asarray(sub[col]) for col in columns]
 
     def _write_data(self, data, header):
-        data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
-        if self.is_mpi_root():
-            fitsio.write(self.filename, data, header=header, clobber=True)
+        if self.backend == "fitsio":
+            return self._write_data_fitsio(data, header)
+        return self._write_data_astropy(data, header)
 
+    def _write_data_fitsio(self, data, header):
+        data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
+        if not self.is_mpi_root():
+            return
+        fits_header = {}
+        self._safe_update_header(fits_header, header)
+        fitsio.write(self.filename, data, header=fits_header, clobber=True)
+
+    @staticmethod
+    def _safe_update_header(fits_header, header_dict):
+        """
+        Update a FITS header with user metadata while avoiding structural/reserved keywords.
+
+        This is intentionally conservative: it skips keys that are known to be written/managed
+        by FITS writers or are dangerous to override.
+        """
+        if not header_dict:
+            return
+
+        # Common structural/reserved keywords for primary + bintable.
+        # (Not exhaustive; the try/except below is the real safety net.)
+        reserved = {
+            "SIMPLE", "BITPIX", "NAXIS", "EXTEND",
+            "XTENSION", "PCOUNT", "GCOUNT",
+            "TFIELDS", "NAXIS1", "NAXIS2",
+            "TFORM", "TTYPE", "TUNIT", "TDIM", "TNULL",
+            "CHECKSUM", "DATASUM"
+        }
+
+        for k, v in header_dict.items():
+            if not isinstance(k, str):
+                continue
+            kk = k.strip().upper()
+            if kk in reserved or kk.startswith(("TFORM", "TTYPE", "TUNIT", "TDIM", "TNULL")):
+                continue
+            try:
+                fits_header[kk] = v
+            except Exception:
+                # Ignore anything FITS won't accept (non-serializable types, too long, etc.)
+                pass
+
+    def _write_data_astropy(self, data, header):
+        data = mpy.gather(data, mpicomm=self.mpicomm, mpiroot=self.mpiroot)
+        if not self.is_mpi_root():
+            return
+
+        # `data` is expected to be a numpy structured array (per your _type_write_data = ['array'])
+        # Build HDUList with Primary + BinTable.
+        primary = apyfits.PrimaryHDU()
+        bintable = apyfits.BinTableHDU(data=data)
+
+        # If user provided ext as a string, treat it as EXTNAME on write.
+        # If ext is int, we still write the table as extension 1 (standard),
+        # but we can store EXTNAME if header contains it or ext is str.
+        if isinstance(self.ext, str):
+            bintable.header["EXTNAME"] = self.ext
+
+        # Apply user header metadata to the table HDU (and optionally primary if you want).
+        self._safe_update_header(bintable.header, header)
+
+        hdul = apyfits.HDUList([primary, bintable])
+        hdul.writeto(self.filename, overwrite=True)
 
 
 try:
