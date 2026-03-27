@@ -53,7 +53,8 @@ class Slice(BaseClass):
             sl = slice(None)
         if isinstance(sl, self.__class__):
             self.__dict__.update(sl.__dict__)
-            if self.is_array: self.idx = np.array(self.idx, copy=copy)
+            if self.is_array:
+                self.idx = np.array(self.idx) if copy else np.asarray(self.idx)
             return
         elif isinstance(sl, slice):
             if size is not None:
@@ -102,7 +103,7 @@ class Slice(BaseClass):
     def to_array(self, copy=False):
         """Turn :class:`Slice` into a numpy array."""
         if self.is_array:
-            return np.array(self.idx, copy=copy)
+            return np.array(self.idx) if copy else np.asarray(self.idx)
         return np.arange(self.idx.start, self.idx.stop, self.idx.step)
 
     def nslices(self):
