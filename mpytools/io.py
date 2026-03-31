@@ -885,6 +885,8 @@ class HDF5File(BaseFile):
                             if self.group != '/':
                                 grp = file.create_group(self.group)
                             grp.attrs.update(header)
+                        else:
+                            grp = file[self.group]
                         dset = grp.create_dataset(name, data=array)
                 first = False
 
