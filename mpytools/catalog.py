@@ -306,7 +306,7 @@ class BaseCatalog(BaseClass):
             if c in self.data and self.data[c] is None:
                 read.append(c)
         if read:
-            arrays = self.source.read(read)  # may be faster, for e.g. fits
+            arrays = self.source.read(read)  # may be faster to read all columns at once, e.g. for fits
             for c, array in zip(read, arrays):
                 self.data[c] = array
         toret = []
@@ -937,12 +937,17 @@ class BaseCatalog(BaseClass):
             unique, counts = np.unique(self[orderby], return_counts=True)
             # Proceed rank-by-rank to save memory
             for irank in range(1, self.mpicomm.size):
-                unique_irank = mpy.sendrecv(unique, source=irank, dest=0, tag=0, mpicomm=self.mpicomm)
-                counts_irank = mpy.sendrecv(counts, source=irank, dest=0, tag=0, mpicomm=self.mpicomm)
-                if self.mpicomm.rank == 0:
-                    unique, counts = np.concatenate([unique, unique_irank]), np.concatenate([counts, counts_irank])
+                if self.mpicomm.rank == irank:
+                    mpy.send(unique, dest=0, tag=0, mpicomm=self.mpicomm)
+                    mpy.send(counts, dest=0, tag=1, mpicomm=self.mpicomm)
+                elif self.mpicomm.rank == 0:
+                    unique_irank = mpy.recv(source=irank, tag=0, mpicomm=self.mpicomm)
+                    counts_irank = mpy.recv(source=irank, tag=1, mpicomm=self.mpicomm)
+                    unique = np.concatenate([unique, unique_irank])
+                    counts = np.concatenate([counts, counts_irank])
                     unique, inverse = np.unique(unique, return_inverse=True)
                     counts = np.bincount(inverse, weights=counts).astype(int)
+
             # Compute catalog size that each rank must have after sorting
             sizes = None
             if self.mpicomm.rank == 0:

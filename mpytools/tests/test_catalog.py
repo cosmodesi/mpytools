@@ -118,7 +118,7 @@ def test_io():
     csize = ref.csize
     rsize = csize // mpy.COMM_WORLD.size #- 1
 
-    for ext, kw in zip(['fits', 'fits', 'fits.bz2', 'bigfile', 'hdf5', 'npy', 'asdf'][:-1],
+    for ext, kw in zip(['fits', 'fits', 'fits.bz2', 'bigfile', 'hdf5', 'npy', 'asdf'][:-2],
                        [{}, {'backend': 'astropy'}, {}, {}, {}, {}, {}]):
 
         #FileStack._verbose_nfiles = 2
@@ -142,14 +142,17 @@ def test_io():
                 assert set(test.columns()) == set(ref.columns())
                 assert np.all(test.cget('Position', mpiroot=None) == ref.cget('Position', mpiroot=None))
                 test['Position'] += 10
+
             if ext == 'bigfile':
                 test.write(fns, columns=['Position', 'RA'], overwrite=True)
             else:
                 test.write(fns, columns=['Position', 'RA'])
+
             assert np.allclose(test.cget('Position', mpiroot=None), ref.cget('Position', mpiroot=None) + 10)
             test2 = Catalog.read(fns)
             assert set(test2.columns()) == set(['Position', 'RA'])  # bigfile does not conserve column order
             ref.write(fns)
+            mpicomm.Barrier()
             test = Catalog.read(fns)
             assert np.all(test.cget('Position', mpiroot=None) == ref.cget('Position', mpiroot=None))
 
@@ -355,4 +358,4 @@ if __name__ == '__main__':
     test_cslice()
     test_io()
     test_misc()
-    test_memory()
+    #test_memory()

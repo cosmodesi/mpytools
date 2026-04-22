@@ -367,6 +367,21 @@ class Slice(BaseClass):
             idx = mpicomm.recv(source=source, tag=tag)
         return cls(idx)
 
+    @CurrentMPIComm.enable
+    def sendrecv(self, dest, source=MPI.ANY_SOURCE, sendtag=0, recvtag=MPI.ANY_TAG, mpicomm=None):
+        """Send slice to rank ``dest`` and receive slice from rank ``source``."""
+        is_array = mpicomm.sendrecv(
+            self.is_array, dest=dest, sendtag=sendtag + 1,
+            source=source, recvtag=recvtag + 1
+        )
+        if is_array:
+            idx = sendrecv(self.idx, dest=dest, source=source,
+                           sendtag=sendtag, recvtag=recvtag, mpicomm=mpicomm)
+        else:
+            idx = mpicomm.sendrecv(self.idx, dest=dest, sendtag=sendtag,
+                                   source=source, recvtag=recvtag)
+        return self.__class__(idx)
+
 
 class MPIScatteredSource(BaseClass):
     """
@@ -426,40 +441,58 @@ class MPIScatteredSource(BaseClass):
         array : array
             Array corresponding to input slices.
         """
-        # Here, slice in global coordinates
         if not is_sequence(arrays):
             arrays = [arrays]
         if len(arrays) != len(self.slices):
-            raise ValueError('Expected list of arrays of length {:d}, found {:d}'.format(len(self.slices), len(arrays)))
+            raise ValueError('Expected list of arrays of length {:d}, found {:d}' .format(len(self.slices), len(arrays)))
         size = sum(map(len, arrays))
         if size != self.size:
             raise ValueError('Expected list of arrays of total length {:d}, found {:d}'.format(self.size, size))
+
         if not args:
-            args = (slice(self.mpicomm.rank * self.csize // self.mpicomm.size, (self.mpicomm.rank + 1) * self.csize // self.mpicomm.size, 1), )
+            args = (slice(self.mpicomm.rank * self.csize // self.mpicomm.size, (self.mpicomm.rank + 1) * self.csize // self.mpicomm.size, 1),)
 
         all_slices = self.mpicomm.allgather(self.slices)
-        nslices = max(map(len, all_slices))
         toret = []
 
         for sli in args:
             sli = Slice(sli, size=self.csize)
-            idx, tmp = [None] * self.mpicomm.size, [None] * self.mpicomm.size
+            idx = [None] * self.mpicomm.size
+            tmp = [None] * self.mpicomm.size
+
             for irank in range(self.mpicomm.size):
-                self_slice_in_irank = [sl.find(sli, return_index=True) for sl in all_slices[irank]]
-                idx[irank] = [sl[1].idx for sl in self_slice_in_irank]
+
+                # What do I need from rank irank?
+                # For each slice owned by irank, find overlap with requested global slice.
+                my_find = [sl.find(sli, return_index=True) for sl in all_slices[irank]]
+                idx[irank] = [sl[1].idx for sl in my_find]
+
                 if irank == self.mpicomm.rank:
-                    tmp[irank] = [array[sl[0].idx] for iarray, (array, sl) in enumerate(zip(arrays, self_slice_in_irank))]
-                else:
-                    for isl, sl in enumerate(self_slice_in_irank): sl[0].send(dest=irank, tag=isl)
-                    self_slice_in_irank = [Slice.recv(source=irank, tag=isl) for isl in range(len(self.slices))]
-                    for iarray, (array, sl) in enumerate(zip(arrays, self_slice_in_irank)):
-                        send(array[sl.idx], dest=irank, tag=nslices + iarray, mpicomm=self.mpicomm)
-                    tmp[irank] = [recv(source=irank, tag=nslices + iarray, mpicomm=self.mpicomm) for iarray in range(len(self_slice_in_irank))]
-            idx, tmp = utils.list_concatenate(idx), utils.list_concatenate(tmp)
+                    # Local case: no communication needed
+                    tmp[irank] = [array[sl[0].idx] for array, sl in zip(arrays, my_find)]
+                    continue
+
+                # Exchange slice requests:
+                #   my_request  = what I want from irank
+                #   their_request = what irank wants from me
+                my_request = [sl[0] for sl in my_find]
+                their_request = [my_sl.sendrecv(dest=irank, source=irank, sendtag=2 * isl, recvtag=2 * isl, mpicomm=self.mpicomm) for isl, my_sl in enumerate(my_request)]
+
+                # Build payload that irank asked from me
+                my_payload = [array[sl.idx] for array, sl in zip(arrays, their_request)]
+
+                # Exchange payload arrays
+                their_payload = [sendrecv(data, dest=irank, source=irank, sendtag=1000 + iarray, recvtag=1000 + iarray, mpicomm=self.mpicomm) for iarray, data in enumerate(my_payload)]
+                tmp[irank] = their_payload
+
+            idx = utils.list_concatenate(idx)
+            tmp = utils.list_concatenate(tmp)
+
             if sli.is_array:
                 toret.append(np.concatenate(tmp, axis=0)[np.argsort(np.concatenate(idx, axis=0))])
             else:
                 toret += [tmp[ii] for ii in np.argsort([iidx.start for iidx in idx])]
+
         return np.concatenate(toret)
 
     @classmethod
@@ -1187,16 +1220,74 @@ def recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, mpicomm=None):
 
 
 @CurrentMPIComm.enable
-def sendrecv(data, source=0, dest=0, tag=0, mpicomm=None):
-    """Send array from process ``source`` and receive on process ``dest``."""
-    if dest == source:
-        return np.asarray(data)
-    if mpicomm.rank == source:
-        send(data, dest=dest, tag=tag, mpicomm=mpicomm)
-    toret = None
-    if mpicomm.rank == dest:
-        toret = recv(source=source, tag=tag, mpicomm=mpicomm)
-    return toret
+def sendrecv(data, dest, source=MPI.ANY_SOURCE, sendtag=0, recvtag=MPI.ANY_TAG, mpicomm=None):
+    """
+    Send input array ``data`` to process ``dest`` and receive array from process ``source``.
+
+    Parameters
+    ----------
+    data : array
+        Array to send.
+
+    dest : int
+        Rank of process to send array to.
+
+    source : int, default=MPI.ANY_SOURCE
+        Rank of process to receive array from.
+
+    sendtag : int, default=0
+        Message identifier for send.
+
+    recvtag : int, default=MPI.ANY_TAG
+        Message identifier for receive.
+
+    mpicomm : MPI communicator, default=None
+        Communicator. Defaults to current communicator.
+
+    Returns
+    -------
+    recvdata : array
+        Received array.
+    """
+    data = np.asarray(data)
+    shape, dtype = (data.shape, data.dtype)
+    data = np.ascontiguousarray(data)
+
+    fail = False
+    if dtype.char == 'V':
+        fail = any(dtype[name] == 'O' for name in dtype.names)
+    else:
+        fail = dtype == 'O'
+    if fail:
+        raise ValueError('"object" data type not supported in sendrecv; please specify specific data type')
+
+    send_duplicity = np.prod(shape[1:], dtype='intp')
+    send_itemsize = send_duplicity * dtype.itemsize
+    send_dt = MPI.BYTE.Create_contiguous(send_itemsize)
+    send_dt.Commit()
+
+    # Exchange metadata first
+    recv_shape, recv_dtype = mpicomm.sendrecv(
+        sendobj=(shape, dtype), dest=dest, sendtag=sendtag,
+        source=source, recvtag=recvtag
+    )
+
+    recvdata = np.zeros(recv_shape, dtype=recv_dtype)
+
+    recv_duplicity = np.prod(recv_shape[1:], dtype='intp')
+    recv_itemsize = recv_duplicity * recv_dtype.itemsize
+    recv_dt = MPI.BYTE.Create_contiguous(recv_itemsize)
+    recv_dt.Commit()
+
+    mpicomm.Sendrecv(
+        sendbuf=[data, send_dt], dest=dest, sendtag=sendtag,
+        recvbuf=[recvdata, recv_dt], source=source, recvtag=recvtag
+    )
+
+    send_dt.Free()
+    recv_dt.Free()
+
+    return recvdata
 
 
 @CurrentMPIComm.enable
@@ -1451,7 +1542,7 @@ def _reduce_arg_array(data, npop, mpiop, *args, mpicomm=None, axis=None, empty=N
         # first decide from which rank we get the solution
         mpicomm.Allreduce(val, total, op=mpiop)
         mask = (val == total) & (arg is not None)
-        rank = np.full_like(mpicomm.size, val, dtype='i4')
+        rank = np.full_like(val, mpicomm.size, dtype='i4')
         rank[mask] = mpicomm.rank
         totalrank = np.empty_like(rank)
         mpicomm.Allreduce(rank, totalrank, op=MPI.MIN)
@@ -1568,7 +1659,7 @@ def csort(data, axis=-1, kind=None, mpicomm=None):
 
 
 @CurrentMPIComm.enable
-def cquantile(data, q, weights=None, axis=None, interpolation='linear', mpicomm=None):
+def cquantile(data, q, weights=None, axis=None, method='linear', mpicomm=None):
     """
     Return weighted array quantiles. See :func:`utils.weighted_quantile`.
     Naive implementation: array is gathered before taking quantile.
@@ -1580,9 +1671,9 @@ def cquantile(data, q, weights=None, axis=None, interpolation='linear', mpicomm=
         if not isnoneweights: weights = gather(weights, mpiroot=0, mpicomm=mpicomm)
         toret = None
         if mpicomm.rank == 0:
-            toret = utils.weighted_quantile(gathered, q, weights=weights, axis=axis, interpolation=interpolation)
+            toret = utils.weighted_quantile(gathered, q, weights=weights, axis=axis, method=method)
         return bcast(toret, mpiroot=0, mpicomm=mpicomm)
-    return utils.weighted_quantile(data, q, weights=weights, axis=axis, interpolation=interpolation)
+    return utils.weighted_quantile(data, q, weights=weights, axis=axis, method=method)
 
 
 @CurrentMPIComm.enable

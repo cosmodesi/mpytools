@@ -5,6 +5,7 @@ import re
 import shutil
 
 import numpy as np
+from mpi4py import MPI
 
 from . import utils
 from .utils import BaseClass, is_sequence, CurrentMPIComm
@@ -175,11 +176,24 @@ class FileStack(BaseClass):
             verbose = len(self.files) < self._verbose_nfiles
             if not verbose and self.is_mpi_root():
                 self.log_info('Reading files {} to {}.'.format(self.files[0].filename, self.files[-1].filename))
-            self._header = {}
-            for file in self.files:
+            self._header, _header = {}, {}
+            for ifile, file in enumerate(self.files):
                 if verbose and self.is_mpi_root():
                     self.log_info('Reading {}.'.format(file.filename))
-                self._header.update(file.header)
+                # Parallel reading
+                mpicomm = file.mpicomm
+                file.mpicomm = MPI.COMM_SELF
+                mpiroot = ifile % self.mpicomm.size
+                _header[ifile] = None
+                if mpicomm.rank == mpiroot:
+                    _header[ifile] = (file.header, {name: getattr(file, name) for name in ['_csize', '_columns']})
+                file.mpicomm = mpicomm
+            for ifile, file in enumerate(self.files):
+                mpiroot = ifile % self.mpicomm.size
+                _header[ifile], state = self.mpicomm.bcast(_header[ifile], root=mpiroot)
+                file._header = _header[ifile]
+                file.__dict__.update(state)
+                self._header.update(_header[ifile])
         return self._header
 
     def fileslices(self, return_index=False):
@@ -286,11 +300,18 @@ class FileStack(BaseClass):
         isscalar = isinstance(columns, str)
         if isscalar: columns = [columns]
         toret = [[] for column in columns]
+        # This is local
         for islice, slices in enumerate(self.fileslices(return_index=True)):
             tmp, idx = [], []
             for ifile, (rows, iidx) in enumerate(slices):
-                tmp.append(self.files[ifile].read(columns, rows=rows))
-                idx.append(iidx.idx)
+                # Call read only if there is something to read (or dtype must be determined)
+                mpicomm = self.files[ifile].mpicomm
+                # Disable collective read
+                self.files[ifile].mpicomm = MPI.COMM_SELF
+                if rows.size or not len(tmp):
+                    tmp.append(self.files[ifile].read(columns, rows=rows))
+                    idx.append(iidx.idx)
+                self.files[ifile].mpicomm = mpicomm
             sidx = np.argsort([iidx.start for iidx in idx])
             for icol in range(len(columns)):
                 toret[icol] += [tmp[ii][icol] for ii in sidx]
@@ -620,6 +641,7 @@ class FitsFile(BaseFile):
                 raise IOError(f'{self.filename} extension {self.ext} is not a readable binary table')
 
             rec_dtype = file.get_rec_dtype()[0]
+
             return {
                 'csize': file.get_nrows(),
                 'columns': rec_dtype.names,
@@ -841,6 +863,7 @@ class HDF5File(BaseFile):
             return {'csize': size, 'columns': columns, 'header': dict(group.attrs)}
 
     def _read_rows(self, columns, rows):
+        # Collective read not used in practice by FileStack
         if self.mpicomm.size > 1 and h5py.get_config().mpi:
             kwargs = {'driver': 'mpio', 'comm': self.mpicomm} | self.kw
         else:
