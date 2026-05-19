@@ -387,7 +387,7 @@ def get_filetype(filetype=None, filename=None):
                 for ext in filetype.extensions:
                     if filename.endswith('.' + ext):
                         return filetype
-            raise IOError('Extension {} is unknown'.format(ext))
+            raise IOError('Extension of {} is unknown'.format(filename))
     if isinstance(filetype, str):
         filetype = RegisteredFile._registry[filetype.lower()]
 
