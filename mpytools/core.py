@@ -342,7 +342,7 @@ class Slice(BaseClass):
             return [Slice(0, 0, 1)]
         slices = [others[0].idx]
         for other in others[1:]:
-            if other.idx.step == slices[-1].step and other.idx.start == slices[-1].stop + other.idx.step + (-1) ** (other.idx.step > 0):
+            if other.idx.step == slices[-1].step and slices[-1].stop is not None and other.idx.start == slices[-1].stop + other.idx.step + (-1) ** (other.idx.step > 0):
                 slices[-1] = slice(slices[-1].start, other.idx.stop, slices[-1].step)
             else:
                 slices.append(other.idx)

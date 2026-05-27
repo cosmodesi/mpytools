@@ -256,12 +256,11 @@ class FileStack(BaseClass):
     def concatenate(cls, *others):
         """Concatenate :class:`FileStack` locally, e.g. the first rank will get the beginning of all files."""
         new = cls(*utils.list_concatenate([other.files for other in others]))
-        if any(getattr(other, '_slices', None) is not None for other in others):
-            slices, cumsize = [], 0
-            for other in others:
-                slices += [sl.shift(cumsize) for sl in other.slices]
-                cumsize += other.cfilesize
-            new._slices = slices
+        slices, cumsize = [], 0
+        for other in others:
+            slices += [sl.shift(cumsize) for sl in other.slices]
+            cumsize += other.cfilesize
+        new._slices = slices
         return new
 
     def append(self, other, **kwargs):
