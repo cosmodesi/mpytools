@@ -483,6 +483,9 @@ class BaseCatalog(BaseClass):
         if intersection:
             for other in others:
                 new_columns = [column for column in new_columns if column in other.columns()]
+            for column in new.columns():
+                if column not in new_columns:
+                    del new[column]
         else:
             for other in others:
                 other_columns = other.columns()
@@ -548,6 +551,9 @@ class BaseCatalog(BaseClass):
         if intersection:
             for other in others:
                 new_columns = [column for column in new_columns if column in other.columns()]
+            for column in new.columns():
+                if column not in new_columns:
+                    del new[column]
         else:
             for other in others:
                 other_columns = other.columns()
