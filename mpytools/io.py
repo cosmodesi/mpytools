@@ -817,7 +817,7 @@ class HDF5File(BaseFile):
     _type_read_rows = ['slice', 'sslice', 'index']
     _type_write_data = ['dict']
 
-    def __init__(self, filename, group='/', mpicomm=None, **kwargs):
+    def __init__(self, filename, group='/', compression=None, mpicomm=None, **kwargs):
         """
         Initialize :class:`HDF5File`.
 
@@ -828,6 +828,13 @@ class HDF5File(BaseFile):
 
         group : string, default='/'
             HDF5 group where columns are located.
+
+        compression : dict, default=None
+            Options of :meth:`h5py.Group.create_dataset` for every column written, e.g. ``{'compression': 'gzip'}``, or
+            ``hdf5plugin.Blosc(cname='zstd', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE)`` (as the DESI LSS mock catalogs). With h5py
+            built with MPI, every rank writes its slice of a compressed column collectively (HDF5 compresses parallel writes only
+            then); otherwise each column is gathered and written by one rank. Reading a file compressed with a plugin filter (blosc,
+            zstd...) needs ``hdf5plugin``, which this module imports if it is installed.
 
         kwargs : dict
             Arguments for :class:`h5py.File`.
@@ -842,6 +849,7 @@ class HDF5File(BaseFile):
         if not group or group == '/' * len(group):
             self.group = '/'
         self.kw = kwargs
+        self.compression = dict(compression or {})
         super(HDF5File, self).__init__(filename=filename, mpicomm=mpicomm)
 
     def _read_header_root(self):
@@ -892,8 +900,27 @@ class HDF5File(BaseFile):
                     grp = file.create_group(self.group)
                 grp.attrs.update(header)
                 for name in data:
-                    dset = grp.create_dataset(name, shape=(csize,) + data[name].shape[1:], dtype=data[name].dtype)
-                    dset[start:stop] = data[name]
+                    # compressed (a chunked dataset cannot be empty), every rank writing its slice collectively: HDF5 compresses
+                    # parallel writes only when collective
+                    compression = self.compression if csize else {}
+                    dset = grp.create_dataset(name, shape=(csize,) + data[name].shape[1:], dtype=data[name].dtype, **compression)
+                    if not compression:
+                        dset[start:stop] = data[name]
+                        continue
+                    # every rank takes part in the collective write, those with no rows with an empty selection: h5py's
+                    # dset[start:stop] = array returns without writing for an empty selection, leaving the others waiting
+                    array, fspace = np.ascontiguousarray(data[name]), dset.id.get_space()
+                    if stop > start:
+                        fspace.select_hyperslab((start,) + (0,) * (array.ndim - 1), array.shape)
+                        mspace = h5py.h5s.create_simple(array.shape)
+                    else:
+                        array = np.zeros((1,) + dset.shape[1:], dtype=dset.dtype)
+                        fspace.select_none()
+                        mspace = h5py.h5s.create_simple(array.shape)
+                        mspace.select_none()
+                    dxpl = h5py.h5p.create(h5py.h5p.DATASET_XFER)
+                    dxpl.set_dxpl_mpio(h5py.h5fd.MPIO_COLLECTIVE)
+                    dset.id.write(mspace, fspace, array, dxpl=dxpl)
         else:
             if self.is_mpi_root():
                 h5py.File(self.filename, 'w', **kwargs)
@@ -909,7 +936,7 @@ class HDF5File(BaseFile):
                             grp.attrs.update(header)
                         else:
                             grp = file[self.group]
-                        dset = grp.create_dataset(name, data=array)
+                        dset = grp.create_dataset(name, data=array, **(self.compression if array.size else {}))
                 first = False
 
 

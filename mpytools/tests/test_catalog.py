@@ -103,6 +103,44 @@ class FakeCatalog(Catalog):
         return self
 
 
+def test_io_hdf5_compression():
+    import h5py
+    csize = 100 * mpy.COMM_WORLD.size
+    size = local_size(csize)
+    rng = MPIRandomState(size, seed=42)
+    ref = Catalog(data={'RA': rng.uniform(0., 1.), 'Z': rng.uniform(0., 1.).astype('f4'), 'Position': rng.uniform(0., 1., itemshape=3)})
+    ref['index'] = ref.cindex()
+    mpicomm = ref.mpicomm
+    compressions = {'gzip': {'compression': 'gzip', 'compression_opts': 4}}
+    try:
+        import hdf5plugin
+    except ImportError:
+        pass
+    else:
+        compressions['blosc'] = dict(hdf5plugin.Blosc(cname='zstd', clevel=5, shuffle=hdf5plugin.Blosc.SHUFFLE))
+    # uneven sizes over the ranks (and one empty, with several ranks) for the collective writes
+    keep = ref['Z'] < 0.7
+    if mpicomm.size > 1 and mpicomm.rank == mpicomm.size - 1: keep[...] = False
+    for (label, compression), cat in [(item, c) for item in compressions.items() for c in [ref, ref[keep]]]:
+        ref = cat
+        fn = mpicomm.bcast(os.path.join('_tests', 'tmp_{}.hdf5'.format(label)), root=0)
+        ref.write(fn, group='LSS', compression=compression)
+        mpicomm.Barrier()
+        test = Catalog.read(fn, group='LSS')
+        assert set(test.columns()) == set(ref.columns())
+        for name in ref.columns():
+            assert test[name].dtype == ref[name].dtype
+            assert np.all(test.cget(name, mpiroot=None) == ref.cget(name, mpiroot=None))
+        if mpicomm.rank == 0:
+            with h5py.File(fn, 'r') as file:
+                dset = file['LSS']['Position']
+                if label == 'gzip':
+                    assert dset.compression == 'gzip'
+                else:
+                    plist = dset.id.get_create_plist()
+                    assert 32001 in [plist.get_filter(i)[0] for i in range(plist.get_nfilters())]  # blosc
+
+
 def test_io():
 
     csize = 100 * mpy.COMM_WORLD.size
